@@ -383,6 +383,30 @@ function mapPropertyRow(row: PropertyRow): Property {
   };
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object") {
+    const errorRecord = error as Record<string, unknown>;
+    const parts: string[] = [];
+
+    for (const key of ["message", "code", "details", "hint"]) {
+      const value = errorRecord[key];
+      if (typeof value === "string" && value.length > 0) {
+        parts.push(`${key}: ${value}`);
+      }
+    }
+
+    if (parts.length > 0) {
+      return parts.join(" · ");
+    }
+  }
+
+  return "Nieznany błąd";
+}
+
 function PropertyMarkerContent({
   property,
   rating,
@@ -724,7 +748,7 @@ export default function HomePage() {
         }
       } catch (error) {
         if (!ignoreLoadedProperties) {
-          const message = error instanceof Error ? error.message : "Nieznany błąd";
+          const message = getErrorMessage(error);
           setPropertiesLoadError(`Nie udało się pobrać danych z Supabase: ${message}`);
         }
       }
@@ -1002,7 +1026,7 @@ export default function HomePage() {
       setProperties((currentProperties) => [newProperty, ...currentProperties]);
       setSelectedPropertyId(newProperty.id);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Nieznany błąd";
+      const message = getErrorMessage(error);
       setPropertyFormError(
         `Nie udało się zapisać w Supabase: ${message}`,
       );
