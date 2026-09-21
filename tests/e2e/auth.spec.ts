@@ -35,7 +35,7 @@ test("anonymous users do not see project-only actions", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Filtry listy" })).toHaveCount(0);
 });
 
-test("login panel supports sign in, registration, and SSO without private placeholders", async ({
+test("login panel supports sign in, registration, and password reset without private placeholders", async ({
   page,
 }) => {
   await page.goto("/");
@@ -45,10 +45,16 @@ test("login panel supports sign in, registration, and SSO without private placeh
   await expect(page.getByRole("button", { name: "Logowanie" })).toBeVisible();
   await expect(page.getByPlaceholder("email@przyklad.pl")).toBeVisible();
   await expect(page.getByPlaceholder("Minimum 6 znaków")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Nie pamiętasz hasła?" })).toBeVisible();
   await expect(page.getByText("piver2@gmail.com")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Nie pamiętasz hasła?" }).click();
+  await expect(
+    page.getByText("Podaj email, na który wysłać link resetowania hasła."),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Rejestracja" }).click();
   await expect(page.getByRole("button", { name: "Utwórz konto" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Google" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "GitHub" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Google" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "GitHub" })).toHaveCount(0);
 });

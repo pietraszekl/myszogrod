@@ -33,7 +33,6 @@ import {
   LocateFixed,
   LogIn,
   LogOut,
-  Mail,
   MapPin,
   Mountain,
   Pencil,
@@ -1276,8 +1275,10 @@ export default function HomePage() {
   const [authMode, setAuthMode] = useState<AuthMode>("sign-in");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [newAuthPassword, setNewAuthPassword] = useState("");
   const [authMessage, setAuthMessage] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [passwordRecoveryOpen, setPasswordRecoveryOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
@@ -1360,8 +1361,14 @@ export default function HomePage() {
       }
     });
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
       setCurrentUser(session?.user ?? null);
+
+      if (event === "PASSWORD_RECOVERY") {
+        setPasswordRecoveryOpen(true);
+        setSettingsOpen(true);
+        setAuthMessage("Ustaw nowe hasło do konta.");
+      }
     });
 
     return () => {
@@ -1630,7 +1637,7 @@ export default function HomePage() {
     }
 
     setAuthBusy(true);
-    setAuthMessage("");
+    setAuthMessage(authMode === "sign-up" ? "Tworzę konto..." : "Loguję...");
 
     try {
       const supabase = createSupabaseClient();
@@ -1669,25 +1676,63 @@ export default function HomePage() {
     }
   }
 
-  async function signInWithProvider(provider: "google" | "github") {
+  async function requestPasswordReset() {
+    const email = authEmail.trim();
+
+    if (!email) {
+      setAuthMessage("Podaj email, na który wysłać link resetowania hasła.");
+      return;
+    }
+
     setAuthBusy(true);
-    setAuthMessage("");
+    setAuthMessage("Wysyłam link resetowania hasła...");
 
     try {
       const supabase = createSupabaseClient();
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo: window.location.origin,
-        },
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
       });
 
       if (error) {
         throw error;
       }
+
+      setAuthMessage("Wysłano link resetowania hasła. Sprawdź skrzynkę email.");
     } catch (error) {
+      setAuthMessage(`Nie udało się wysłać resetu hasła: ${getErrorMessage(error)}`);
+    } finally {
       setAuthBusy(false);
-      setAuthMessage(`Nie udało się uruchomić SSO: ${getErrorMessage(error)}`);
+    }
+  }
+
+  async function updateRecoveredPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (newAuthPassword.length < 6) {
+      setAuthMessage("Nowe hasło musi mieć co najmniej 6 znaków.");
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage("Zapisuję nowe hasło...");
+
+    try {
+      const supabase = createSupabaseClient();
+      const { error } = await supabase.auth.updateUser({
+        password: newAuthPassword,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setNewAuthPassword("");
+      setPasswordRecoveryOpen(false);
+      setAuthMessage("Hasło zostało zmienione.");
+    } catch (error) {
+      setAuthMessage(`Nie udało się zmienić hasła: ${getErrorMessage(error)}`);
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -1700,6 +1745,10 @@ export default function HomePage() {
     setProperties([]);
     setFiltersOpen(false);
     setSettingsOpen(false);
+    setPasswordRecoveryOpen(false);
+    setNewAuthPassword("");
+    setAuthPassword("");
+    setAuthMessage("");
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -2999,34 +3048,26 @@ export default function HomePage() {
                       ) : (
                         <LogIn aria-hidden="true" className="size-4" />
                       )}
-                      {authMode === "sign-up" ? "Utwórz konto" : "Zaloguj"}
+                      {authBusy
+                        ? authMode === "sign-up"
+                          ? "Tworzę konto..."
+                          : "Loguję..."
+                        : authMode === "sign-up"
+                          ? "Utwórz konto"
+                          : "Zaloguj"}
                     </button>
                   </form>
 
-                  <div className="auth-divider">
-                    <span>albo</span>
-                  </div>
-
-                  <div className="auth-provider-grid">
+                  {authMode === "sign-in" ? (
                     <button
-                      className="secondary-button justify-center"
+                      className="auth-link-button"
                       disabled={authBusy}
-                      onClick={() => signInWithProvider("google")}
+                      onClick={requestPasswordReset}
                       type="button"
                     >
-                      <Mail aria-hidden="true" className="size-4" />
-                      Google
+                      Nie pamiętasz hasła?
                     </button>
-                    <button
-                      className="secondary-button justify-center"
-                      disabled={authBusy}
-                      onClick={() => signInWithProvider("github")}
-                      type="button"
-                    >
-                      <KeyRound aria-hidden="true" className="size-4" />
-                      GitHub
-                    </button>
-                  </div>
+                  ) : null}
 
                   {authMessage ? (
                     <p className="form-help" role="status">
@@ -3036,6 +3077,29 @@ export default function HomePage() {
                 </div>
               ) : (
                 <div className="property-form">
+                  {passwordRecoveryOpen ? (
+                    <form className="auth-form" onSubmit={updateRecoveredPassword}>
+                      <label className="form-field">
+                        <span>Nowe hasło</span>
+                        <input
+                          autoComplete="new-password"
+                          value={newAuthPassword}
+                          onChange={(event) => setNewAuthPassword(event.target.value)}
+                          placeholder="Minimum 6 znaków"
+                          type="password"
+                        />
+                      </label>
+                      <button
+                        className="primary-button justify-center"
+                        disabled={authBusy}
+                        type="submit"
+                      >
+                        <KeyRound aria-hidden="true" className="size-4" />
+                        {authBusy ? "Zapisuję..." : "Zapisz nowe hasło"}
+                      </button>
+                    </form>
+                  ) : null}
+
                   <div className="settings-summary">
                     <div>
                       <span>Zalogowano jako</span>

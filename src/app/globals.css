@@ -1032,32 +1032,23 @@ input:focus-visible {
   box-shadow: 0 8px 18px rgba(23, 33, 29, 0.08);
 }
 
-.auth-form,
-.auth-provider-grid {
+.auth-form {
   display: grid;
   gap: 10px;
 }
 
-.auth-provider-grid {
-  grid-template-columns: 1fr 1fr;
-}
-
-.auth-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--color-muted);
-  font-size: 11px;
+.auth-link-button {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: 13px;
   font-weight: 900;
-  text-transform: uppercase;
+  padding: 0;
 }
 
-.auth-divider::before,
-.auth-divider::after {
-  content: "";
-  height: 1px;
-  flex: 1;
-  background: rgba(23, 33, 29, 0.1);
+.auth-link-button:disabled {
+  color: var(--color-muted);
 }
 
 .settings-summary,
