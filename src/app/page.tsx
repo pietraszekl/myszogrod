@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { User } from "@supabase/supabase-js";
 import {
   AttributionControl,
   type GeoJSONSource,
@@ -25,17 +26,21 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
-  Compass,
+  FolderPlus,
   Home,
   Info,
   LocateFixed,
+  LogIn,
+  LogOut,
   MapPin,
   Mountain,
   Pencil,
   Plus,
+  Settings,
   SlidersHorizontal,
   Star,
   Trash2,
+  UserPlus,
   X,
 } from "lucide-react";
 
@@ -43,6 +48,8 @@ import { createClient as createSupabaseClient } from "@/lib/supabase/browser";
 
 type PropertyType = "land" | "house";
 type PropertyStatus = "Do obejrzenia" | "Obiecujące" | "W trakcie" | "Odrzucone";
+type PropertyTypeFilter = "all" | PropertyType;
+type PropertyStatusFilter = "all" | PropertyStatus;
 type Coordinates = {
   lat: number;
   lng: number;
@@ -62,15 +69,38 @@ type PropertyFormState = {
   photos: PropertyPhoto[];
 };
 
+type Project = {
+  id: string;
+  name: string;
+  ownerId: string;
+};
+
+type ProjectMember = {
+  projectId: string;
+  userId: string;
+  role: "owner" | "admin" | "member";
+};
+
+type ProjectInvitation = {
+  id: string;
+  projectId: string;
+  email: string;
+  role: "admin" | "member";
+  acceptedAt: string | null;
+};
+
 type PropertyPhoto = {
   file?: File;
   id: string;
   name: string;
+  path?: string;
   url: string;
 };
 
 type Property = {
   id: string;
+  projectId: string;
+  createdBy: string | null;
   title: string;
   type: PropertyType;
   location: string;
@@ -93,13 +123,15 @@ type Property = {
 
 type PropertyRow = {
   id: string;
+  project_id?: string | null;
+  created_by?: string | null;
   title: string;
   property_type: PropertyType;
   location: string;
   price: string;
   area: string;
   status: PropertyStatus;
-  source_url: string | null;
+  source_url?: string | null;
   description: string;
   note_count: number;
   photo_count: number;
@@ -110,14 +142,36 @@ type PropertyRow = {
   y: number | string;
 };
 
+type ProjectRow = {
+  id: string;
+  name: string;
+  owner_id: string;
+};
+
+type ProjectMemberRow = {
+  project_id: string;
+  user_id: string;
+  role: ProjectMember["role"];
+};
+
+type ProjectInvitationRow = {
+  id: string;
+  project_id: string;
+  email: string;
+  role: ProjectInvitation["role"];
+  accepted_at: string | null;
+};
+
 type PropertyInsert = {
+  project_id: string;
+  created_by: string;
   title: string;
   property_type: PropertyType;
   location: string;
   price: string;
   area: string;
   status: PropertyStatus;
-  source_url: string | null;
+  source_url?: string | null;
   description: string;
   note_count: number;
   photo_count: number;
@@ -126,6 +180,21 @@ type PropertyInsert = {
   coordinates: Coordinates;
   x: number;
   y: number;
+};
+
+type PropertyPayload = {
+  project_id: string;
+  title: string;
+  property_type: PropertyType;
+  location: string;
+  price: string;
+  area: string;
+  status: PropertyStatus;
+  source_url?: string | null;
+  description: string;
+  photos: PropertyPhoto[];
+  criteria: Property["criteria"];
+  coordinates: Coordinates;
 };
 
 type GeocodeLocationResult = {
@@ -156,6 +225,7 @@ const userLocationCoreLayerId = "user-location-core";
 const userRadiusSourceId = "user-location-radius";
 const userRadiusFillLayerId = "user-location-radius-fill";
 const userRadiusLineLayerId = "user-location-radius-line";
+const propertyPhotoBucket = "property-photos";
 const idleAddressLookup: AddressLookupState = {
   coordinates: null,
   label: "",
@@ -315,6 +385,13 @@ const criteriaByType: Record<PropertyType, string[]> = {
   ],
 };
 
+const propertyStatuses: PropertyStatus[] = [
+  "Do obejrzenia",
+  "Obiecujące",
+  "W trakcie",
+  "Odrzucone",
+];
+const ratingFilterOptions = [0, 4, 6, 8];
 const initialProperties: Property[] = [];
 
 const initialPropertyForm: PropertyFormState = {
@@ -491,22 +568,24 @@ function parsePhotos(value: unknown): PropertyPhoto[] {
   }
 
   return value
-    .map((photo) => {
+    .map((photo): PropertyPhoto | null => {
       if (
         !photo ||
         typeof photo !== "object" ||
         !("id" in photo) ||
-        !("name" in photo) ||
-        !("url" in photo)
+        !("name" in photo)
       ) {
         return null;
       }
 
+      const path = "path" in photo && typeof photo.path === "string" ? photo.path : undefined;
+      const url = "url" in photo && typeof photo.url === "string" ? photo.url : "";
+
       if (
         typeof photo.id !== "string" ||
         typeof photo.name !== "string" ||
-        typeof photo.url !== "string" ||
-        photo.url.startsWith("blob:")
+        (!path && !url) ||
+        url.startsWith("blob:")
       ) {
         return null;
       }
@@ -514,7 +593,8 @@ function parsePhotos(value: unknown): PropertyPhoto[] {
       return {
         id: photo.id,
         name: photo.name,
-        url: photo.url,
+        path,
+        url,
       };
     })
     .filter((photo): photo is PropertyPhoto => photo !== null);
@@ -523,6 +603,8 @@ function parsePhotos(value: unknown): PropertyPhoto[] {
 function mapPropertyRow(row: PropertyRow): Property {
   return {
     id: row.id,
+    projectId: row.project_id ?? "",
+    createdBy: row.created_by ?? null,
     title: row.title,
     type: row.property_type,
     location: row.location,
@@ -538,6 +620,59 @@ function mapPropertyRow(row: PropertyRow): Property {
     coordinates: parseCoordinates(row.coordinates),
     x: parseNumber(row.x, 50),
     y: parseNumber(row.y, 50),
+  };
+}
+
+function mapProjectRow(row: ProjectRow): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    ownerId: row.owner_id,
+  };
+}
+
+function mapProjectMemberRow(row: ProjectMemberRow): ProjectMember {
+  return {
+    projectId: row.project_id,
+    userId: row.user_id,
+    role: row.role,
+  };
+}
+
+function mapProjectInvitationRow(row: ProjectInvitationRow): ProjectInvitation {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    email: row.email,
+    role: row.role,
+    acceptedAt: row.accepted_at,
+  };
+}
+
+async function signPhotoUrl(photo: PropertyPhoto): Promise<PropertyPhoto> {
+  if (!photo.path) {
+    return photo;
+  }
+
+  const supabase = createSupabaseClient();
+  const { data, error } = await supabase.storage
+    .from(propertyPhotoBucket)
+    .createSignedUrl(photo.path, 60 * 60);
+
+  if (error || !data?.signedUrl) {
+    return photo;
+  }
+
+  return {
+    ...photo,
+    url: data.signedUrl,
+  };
+}
+
+async function hydratePropertyPhotoUrls(property: Property): Promise<Property> {
+  return {
+    ...property,
+    photos: await Promise.all(property.photos.map(signPhotoUrl)),
   };
 }
 
@@ -633,14 +768,12 @@ function OpenFreePropertyMap({
   userLocation,
   onSelect,
   onLongPress,
-  resetToken,
 }: {
   properties: Property[];
   selectedPropertyId: string | null;
   userLocation: Coordinates | null;
   onSelect: (propertyId: string) => void;
   onLongPress: (coordinates: Coordinates) => void;
-  resetToken: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -978,29 +1111,6 @@ function OpenFreePropertyMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) {
-      return;
-    }
-
-    if (userLocation) {
-      map.fitBounds(getRadiusBounds(userLocation, userLocationRadiusKm), {
-        duration: 500,
-        maxZoom: 11.8,
-        padding: getUserLocationViewportPadding(),
-      });
-      return;
-    }
-
-    map.easeTo({
-      center: [defaultMapCenter.lng, defaultMapCenter.lat],
-      duration: 500,
-      padding: getMapViewportPadding(),
-      zoom: 10,
-    });
-  }, [resetToken, userLocation]);
-
-  useEffect(() => {
-    const map = mapRef.current;
     const selectedProperty = properties.find(
       (property) => property.id === selectedPropertyId,
     );
@@ -1138,12 +1248,37 @@ function formatCoordinates(coordinates: Coordinates) {
   return `${coordinates.lat.toFixed(6)}, ${coordinates.lng.toFixed(6)}`;
 }
 
+function formatManualLocationLabel(coordinates: Coordinates) {
+  return `Punkt z mapy (${formatCoordinates(coordinates)})`;
+}
+
+function isMissingSourceUrlColumnError(error: unknown) {
+  return getErrorMessage(error).includes("source_url");
+}
+
+function omitSourceUrl<T extends { source_url?: string | null }>(payload: T) {
+  const payloadWithoutSourceUrl = { ...payload };
+  delete payloadWithoutSourceUrl.source_url;
+  return payloadWithoutSourceUrl;
+}
+
 export default function HomePage() {
   const [properties, setProperties] = useState(initialProperties);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [addPropertyOpen, setAddPropertyOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingPropertyId, setEditingPropertyId] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authEmail, setAuthEmail] = useState("piver2@gmail.com");
+  const [authMessage, setAuthMessage] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
+  const [projectName, setProjectName] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [settingsError, setSettingsError] = useState("");
   const [propertyForm, setPropertyForm] = useState<PropertyFormState>(
     createInitialPropertyForm(),
   );
@@ -1152,13 +1287,37 @@ export default function HomePage() {
   const [photoActionError, setPhotoActionError] = useState("");
   const [deleteActionError, setDeleteActionError] = useState("");
   const [activePhotoIndex, setActivePhotoIndex] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [propertyTypeFilter, setPropertyTypeFilter] =
+    useState<PropertyTypeFilter>("all");
+  const [propertyStatusFilter, setPropertyStatusFilter] =
+    useState<PropertyStatusFilter>("all");
+  const [minimumRatingFilter, setMinimumRatingFilter] = useState(0);
   const [addressLookup, setAddressLookup] =
     useState<AddressLookupState>(idleAddressLookup);
   const [manualPropertyCoordinates, setManualPropertyCoordinates] =
     useState<Coordinates | null>(null);
-  const [mapResetToken, setMapResetToken] = useState(0);
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
+  const filtersActive =
+    propertyTypeFilter !== "all" ||
+    propertyStatusFilter !== "all" ||
+    minimumRatingFilter > 0;
+  const filteredProperties = properties.filter((property) => {
+    if (propertyTypeFilter !== "all" && property.type !== propertyTypeFilter) {
+      return false;
+    }
+
+    if (propertyStatusFilter !== "all" && property.status !== propertyStatusFilter) {
+      return false;
+    }
+
+    if (minimumRatingFilter > 0 && getPropertyRating(property) < minimumRatingFilter) {
+      return false;
+    }
+
+    return true;
+  });
 
   const selectedProperty = selectedPropertyId
     ? properties.find((property) => property.id === selectedPropertyId)
@@ -1167,6 +1326,9 @@ export default function HomePage() {
     ? properties.find((property) => property.id === editingPropertyId)
     : undefined;
   const isEditingProperty = Boolean(editingProperty);
+  const activeProject = activeProjectId
+    ? projects.find((project) => project.id === activeProjectId)
+    : undefined;
   const selectedPhotoCount = selectedProperty
     ? selectedProperty.photos.length
     : 0;
@@ -1183,14 +1345,90 @@ export default function HomePage() {
     ) / Object.values(propertyForm.criteriaScores).length;
 
   useEffect(() => {
+    const supabase = createSupabaseClient();
+    let ignoreAuth = false;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (!ignoreAuth) {
+        setCurrentUser(data.user);
+      }
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user ?? null);
+    });
+
+    return () => {
+      ignoreAuth = true;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let ignoreProjects = false;
+
+    async function loadProjects() {
+      if (!currentUser) {
+        setProjects([]);
+        setActiveProjectId(null);
+        setProjectMembers([]);
+        setProjectInvitations([]);
+        setProperties([]);
+        return;
+      }
+
+      try {
+        const supabase = createSupabaseClient();
+        await supabase.rpc("accept_my_project_invitations");
+        const { data, error } = await supabase
+          .from("projects")
+          .select("*")
+          .order("created_at", { ascending: true });
+
+        if (error) {
+          throw error;
+        }
+
+        if (!ignoreProjects) {
+          const nextProjects = (data as ProjectRow[] | null ?? []).map(mapProjectRow);
+          setProjects(nextProjects);
+          setActiveProjectId((currentProjectId) =>
+            currentProjectId && nextProjects.some((project) => project.id === currentProjectId)
+              ? currentProjectId
+              : nextProjects[0]?.id ?? null,
+          );
+          setSettingsError("");
+        }
+      } catch (error) {
+        if (!ignoreProjects) {
+          setSettingsError(`Nie udało się pobrać projektów: ${getErrorMessage(error)}`);
+        }
+      }
+    }
+
+    loadProjects();
+
+    return () => {
+      ignoreProjects = true;
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
     let ignoreLoadedProperties = false;
 
     async function loadProperties() {
+      if (!currentUser || !activeProjectId) {
+        setProperties([]);
+        setPropertiesLoadError(currentUser ? "" : "Zaloguj się, aby zobaczyć projekty.");
+        return;
+      }
+
       try {
         const supabase = createSupabaseClient();
         const { data, error } = await supabase
           .from("properties")
           .select("*")
+          .eq("project_id", activeProjectId)
           .order("created_at", { ascending: false });
 
         if (error) {
@@ -1198,7 +1436,12 @@ export default function HomePage() {
         }
 
         if (!ignoreLoadedProperties) {
-          setProperties((data as PropertyRow[] | null ?? []).map(mapPropertyRow));
+          const loadedProperties = await Promise.all(
+            (data as PropertyRow[] | null ?? [])
+              .map(mapPropertyRow)
+              .map(hydratePropertyPhotoUrls),
+          );
+          setProperties(loadedProperties);
           setPropertiesLoadError("");
         }
       } catch (error) {
@@ -1214,7 +1457,7 @@ export default function HomePage() {
     return () => {
       ignoreLoadedProperties = true;
     };
-  }, []);
+  }, [activeProjectId, currentUser]);
 
   useEffect(() => {
     if (!addPropertyOpen) {
@@ -1272,16 +1515,68 @@ export default function HomePage() {
     };
   }, [addPropertyOpen, manualPropertyCoordinates, propertyForm.location]);
 
+  useEffect(() => {
+    let ignoreSettings = false;
+
+    async function loadProjectSettings() {
+      if (!settingsOpen || !activeProjectId || !currentUser) {
+        return;
+      }
+
+      try {
+        const supabase = createSupabaseClient();
+        const [membersResult, invitationsResult] = await Promise.all([
+          supabase
+            .from("project_members")
+            .select("*")
+            .eq("project_id", activeProjectId)
+            .order("created_at", { ascending: true }),
+          supabase
+            .from("project_invitations")
+            .select("*")
+            .eq("project_id", activeProjectId)
+            .order("created_at", { ascending: false }),
+        ]);
+
+        if (membersResult.error) {
+          throw membersResult.error;
+        }
+
+        if (invitationsResult.error) {
+          throw invitationsResult.error;
+        }
+
+        if (!ignoreSettings) {
+          setProjectMembers(
+            (membersResult.data as ProjectMemberRow[] | null ?? []).map(mapProjectMemberRow),
+          );
+          setProjectInvitations(
+            (invitationsResult.data as ProjectInvitationRow[] | null ?? []).map(
+              mapProjectInvitationRow,
+            ),
+          );
+          setSettingsError("");
+        }
+      } catch (error) {
+        if (!ignoreSettings) {
+          setSettingsError(`Nie udało się pobrać ustawień projektu: ${getErrorMessage(error)}`);
+        }
+      }
+    }
+
+    loadProjectSettings();
+
+    return () => {
+      ignoreSettings = true;
+    };
+  }, [activeProjectId, currentUser, settingsOpen]);
+
   const selectProperty = useCallback((propertyId: string) => {
     setSelectedPropertyId(propertyId);
     setActivePhotoIndex(0);
     setPhotoActionError("");
     setDeleteActionError("");
   }, []);
-
-  function resetMapPosition() {
-    setMapResetToken((token) => token + 1);
-  }
 
   const updateCurrentLocation = useCallback(() => {
     if (!("geolocation" in navigator)) {
@@ -1311,6 +1606,114 @@ export default function HomePage() {
 
   function requestCurrentLocation() {
     updateCurrentLocation();
+  }
+
+  async function signInWithEmail(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = authEmail.trim();
+
+    if (!email) {
+      setAuthMessage("Podaj adres email.");
+      return;
+    }
+
+    try {
+      const supabase = createSupabaseClient();
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.origin,
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setAuthMessage("Wysłano link logowania. Sprawdź skrzynkę email.");
+    } catch (error) {
+      setAuthMessage(`Nie udało się wysłać linku: ${getErrorMessage(error)}`);
+    }
+  }
+
+  async function signOut() {
+    const supabase = createSupabaseClient();
+    await supabase.auth.signOut();
+    setCurrentUser(null);
+    setProjects([]);
+    setActiveProjectId(null);
+    setProperties([]);
+  }
+
+  async function createProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = projectName.trim();
+    if (!currentUser || !name) {
+      setSettingsError("Zaloguj się i podaj nazwę projektu.");
+      return;
+    }
+
+    try {
+      const supabase = createSupabaseClient();
+      const { data, error } = await supabase
+        .from("projects")
+        .insert({
+          name,
+          owner_id: currentUser.id,
+        })
+        .select("*")
+        .single();
+
+      if (error || !data) {
+        throw new Error(error?.message ?? "brak danych zwrotnych");
+      }
+
+      const newProject = mapProjectRow(data as ProjectRow);
+      setProjects((currentProjects) => [...currentProjects, newProject]);
+      setActiveProjectId(newProject.id);
+      setProjectName("");
+      setSettingsError("");
+    } catch (error) {
+      setSettingsError(`Nie udało się utworzyć projektu: ${getErrorMessage(error)}`);
+    }
+  }
+
+  async function inviteCollaborator(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const email = inviteEmail.trim().toLowerCase();
+    if (!currentUser || !activeProjectId || !email) {
+      setSettingsError("Wybierz projekt i podaj email współpracownika.");
+      return;
+    }
+
+    try {
+      const supabase = createSupabaseClient();
+      const { data, error } = await supabase
+        .from("project_invitations")
+        .insert({
+          project_id: activeProjectId,
+          email,
+          role: "member",
+          invited_by: currentUser.id,
+        })
+        .select("*")
+        .single();
+
+      if (error || !data) {
+        throw new Error(error?.message ?? "brak danych zwrotnych");
+      }
+
+      setProjectInvitations((currentInvitations) => [
+        mapProjectInvitationRow(data as ProjectInvitationRow),
+        ...currentInvitations,
+      ]);
+      setInviteEmail("");
+      setSettingsError("");
+    } catch (error) {
+      setSettingsError(`Nie udało się dodać zaproszenia: ${getErrorMessage(error)}`);
+    }
   }
 
   useEffect(() => {
@@ -1369,7 +1772,10 @@ export default function HomePage() {
   }, [updateCurrentLocation]);
 
   const openAddProperty = useCallback((coordinates?: Coordinates) => {
-    setPropertyForm(createInitialPropertyForm());
+    setPropertyForm({
+      ...createInitialPropertyForm(),
+      location: coordinates ? formatManualLocationLabel(coordinates) : "",
+    });
     setPropertyFormError("");
     setEditingPropertyId(null);
     setManualPropertyCoordinates(coordinates ?? null);
@@ -1440,31 +1846,60 @@ export default function HomePage() {
     };
   }
 
-  function readFileAsDataUrl(file: File) {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.addEventListener("load", () => {
-        if (typeof reader.result === "string") {
-          resolve(reader.result);
-          return;
-        }
+  function createPhotoStoragePath(projectId: string, scopeId: string, photo: PropertyPhoto) {
+    const safeName = photo.name
+      .normalize("NFKD")
+      .replace(/[^\w.-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .toLowerCase();
 
-        reject(new Error("Nie udało się odczytać zdjęcia."));
+    return `${projectId}/${scopeId}/${photo.id}-${safeName || "photo"}`;
+  }
+
+  async function uploadPhotoForPersistence(
+    photo: PropertyPhoto,
+    projectId: string,
+    scopeId: string,
+  ): Promise<PropertyPhoto> {
+    if (!photo.file) {
+      return {
+        id: photo.id,
+        name: photo.name,
+        path: photo.path,
+        url: photo.url,
+      };
+    }
+
+    const supabase = createSupabaseClient();
+    const path = createPhotoStoragePath(projectId, scopeId, photo);
+    const { error } = await supabase.storage
+      .from(propertyPhotoBucket)
+      .upload(path, photo.file, {
+        cacheControl: "3600",
+        contentType: photo.file.type,
+        upsert: true,
       });
-      reader.addEventListener("error", () => {
-        reject(new Error("Nie udało się odczytać zdjęcia."));
-      });
-      reader.readAsDataURL(file);
+
+    if (error) {
+      throw error;
+    }
+
+    return signPhotoUrl({
+      id: photo.id,
+      name: photo.name,
+      path,
+      url: photo.url,
     });
   }
 
-  async function preparePhotosForPersistence(photos: PropertyPhoto[]) {
+  async function preparePhotosForPersistence(
+    photos: PropertyPhoto[],
+    projectId: string,
+    scopeId: string,
+  ) {
     return Promise.all(
-      photos.map(async (photo) => ({
-        id: photo.id,
-        name: photo.name,
-        url: photo.file ? await readFileAsDataUrl(photo.file) : photo.url,
-      })),
+      photos.map((photo) => uploadPhotoForPersistence(photo, projectId, scopeId)),
     );
   }
 
@@ -1499,7 +1934,11 @@ export default function HomePage() {
     setPhotoActionError("");
 
     try {
-      const persistedPhotos = await preparePhotosForPersistence(photos);
+      const persistedPhotos = await preparePhotosForPersistence(
+        photos,
+        property.projectId,
+        property.id,
+      );
       const nextPhotos = [...property.photos, ...persistedPhotos];
       const supabase = createSupabaseClient();
       const { data, error } = await supabase
@@ -1525,7 +1964,9 @@ export default function HomePage() {
         throw new Error("Supabase zaktualizował więcej niż jeden wpis. Przerwano odświeżanie zdjęć.");
       }
 
-      const updatedProperty = mapPropertyRow(data[0] as PropertyRow);
+      const updatedProperty = await hydratePropertyPhotoUrls(
+        mapPropertyRow(data[0] as PropertyRow),
+      );
       setProperties((currentProperties) =>
         currentProperties.map((currentProperty) =>
           currentProperty.id === updatedProperty.id ? updatedProperty : currentProperty,
@@ -1544,6 +1985,16 @@ export default function HomePage() {
     const propertyBeingEdited = editingPropertyId
       ? properties.find((property) => property.id === editingPropertyId)
       : undefined;
+
+    if (!currentUser) {
+      setPropertyFormError("Zaloguj się, aby zapisywać nieruchomości.");
+      return;
+    }
+
+    if (!activeProjectId && !propertyBeingEdited) {
+      setPropertyFormError("Utwórz albo wybierz projekt przed dodaniem nieruchomości.");
+      return;
+    }
 
     if (editingPropertyId && !propertyBeingEdited) {
       setPropertyFormError("Nie znaleziono wpisu do edycji. Odśwież dane i spróbuj ponownie.");
@@ -1603,16 +2054,27 @@ export default function HomePage() {
     }
 
     let persistedPhotos: PropertyPhoto[];
+    const photoProjectId = propertyBeingEdited?.projectId ?? activeProjectId!;
+    const photoScopeId =
+      propertyBeingEdited?.id ??
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `draft-${Date.now()}`);
 
     try {
-      persistedPhotos = await preparePhotosForPersistence(propertyForm.photos);
+      persistedPhotos = await preparePhotosForPersistence(
+        propertyForm.photos,
+        photoProjectId,
+        photoScopeId,
+      );
     } catch (error) {
       const message = getErrorMessage(error);
       setPropertyFormError(`Nie udało się przygotować zdjęć: ${message}`);
       return;
     }
 
-    const propertyPayload = {
+    const propertyPayload: PropertyPayload = {
+      project_id: propertyBeingEdited?.projectId ?? activeProjectId!,
       title,
       property_type: propertyForm.type,
       location,
@@ -1633,7 +2095,7 @@ export default function HomePage() {
     if (propertyBeingEdited) {
       try {
         const supabase = createSupabaseClient();
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from("properties")
           .update({
             ...propertyPayload,
@@ -1641,6 +2103,20 @@ export default function HomePage() {
           })
           .eq("id", propertyBeingEdited.id)
           .select("*");
+
+        if (error && isMissingSourceUrlColumnError(error)) {
+          const fallbackPayload = omitSourceUrl(propertyPayload);
+          const fallbackResult = await supabase
+            .from("properties")
+            .update({
+              ...fallbackPayload,
+              photo_count: persistedPhotos.length,
+            })
+            .eq("id", propertyBeingEdited.id)
+            .select("*");
+          data = fallbackResult.data;
+          error = fallbackResult.error;
+        }
 
         if (error) {
           throw error;
@@ -1656,7 +2132,9 @@ export default function HomePage() {
           throw new Error("Supabase zaktualizował więcej niż jeden wpis.");
         }
 
-        const updatedProperty = mapPropertyRow(data[0] as PropertyRow);
+        const updatedProperty = await hydratePropertyPhotoUrls(
+          mapPropertyRow(data[0] as PropertyRow),
+        );
 
         setProperties((currentProperties) =>
           currentProperties.map((property) =>
@@ -1676,6 +2154,7 @@ export default function HomePage() {
 
     const propertyInsert: PropertyInsert = {
       ...propertyPayload,
+      created_by: currentUser.id,
       note_count: 0,
       photo_count: persistedPhotos.length,
       x: 50,
@@ -1684,17 +2163,28 @@ export default function HomePage() {
 
     try {
       const supabase = createSupabaseClient();
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from("properties")
         .insert(propertyInsert)
         .select("*")
         .single();
 
+      if (error && isMissingSourceUrlColumnError(error)) {
+        const fallbackInsert = omitSourceUrl(propertyInsert);
+        const fallbackResult = await supabase
+          .from("properties")
+          .insert(fallbackInsert)
+          .select("*")
+          .single();
+        data = fallbackResult.data;
+        error = fallbackResult.error;
+      }
+
       if (error || !data) {
         throw new Error(error?.message ?? "brak danych zwrotnych");
       }
 
-      const newProperty = mapPropertyRow(data as PropertyRow);
+      const newProperty = await hydratePropertyPhotoUrls(mapPropertyRow(data as PropertyRow));
 
       setProperties((currentProperties) => [newProperty, ...currentProperties]);
       setSelectedPropertyId(newProperty.id);
@@ -1755,12 +2245,11 @@ export default function HomePage() {
     <main className="min-h-screen overflow-hidden bg-[var(--color-canvas)] text-[var(--color-ink)]">
       <section className="relative min-h-screen">
         <OpenFreePropertyMap
-          properties={properties}
+          properties={filteredProperties}
           selectedPropertyId={selectedPropertyId}
           userLocation={userLocation}
           onSelect={selectProperty}
           onLongPress={openAddProperty}
-          resetToken={mapResetToken}
         />
 
         <header className="pointer-events-none absolute inset-x-0 top-0 z-20 px-4 pt-4 sm:px-6 lg:hidden">
@@ -1770,6 +2259,35 @@ export default function HomePage() {
             <div className="flex items-center gap-2">
               <button className="icon-button hidden sm:inline-flex" aria-label="Powiadomienia">
                 <Bell aria-hidden="true" className="size-4" />
+              </button>
+              {currentUser ? (
+                <button
+                  className="icon-button"
+                  aria-label="Wyloguj się"
+                  onClick={signOut}
+                  title="Wyloguj się"
+                  type="button"
+                >
+                  <LogOut aria-hidden="true" className="size-4" />
+                </button>
+              ) : (
+                <button
+                  className="icon-button"
+                  aria-label="Zaloguj się"
+                  onClick={() => setSettingsOpen(true)}
+                  title="Zaloguj się"
+                  type="button"
+                >
+                  <LogIn aria-hidden="true" className="size-4" />
+                </button>
+              )}
+              <button
+                className="icon-button"
+                aria-label="Ustawienia projektu"
+                onClick={() => setSettingsOpen(true)}
+                type="button"
+              >
+                <Settings aria-hidden="true" className="size-4" />
               </button>
               <button className="icon-button" aria-label="Filtry mapy">
                 <SlidersHorizontal aria-hidden="true" className="size-4" />
@@ -1783,21 +2301,146 @@ export default function HomePage() {
             <div className="border-b border-black/10 p-5">
               <div className="flex items-start justify-between gap-3">
                 <AppBrand />
+                <div className="flex shrink-0 items-center gap-2">
+                  {currentUser ? (
+                    <button
+                      className="icon-button"
+                      aria-label="Wyloguj się"
+                      onClick={signOut}
+                      title="Wyloguj się"
+                      type="button"
+                    >
+                      <LogOut aria-hidden="true" className="size-4" />
+                    </button>
+                  ) : (
+                    <button
+                      className="icon-button"
+                      aria-label="Zaloguj się"
+                      onClick={() => setSettingsOpen(true)}
+                      title="Zaloguj się"
+                      type="button"
+                    >
+                      <LogIn aria-hidden="true" className="size-4" />
+                    </button>
+                  )}
+                  <button
+                    className="icon-button"
+                    aria-label="Ustawienia projektu"
+                    onClick={() => setSettingsOpen(true)}
+                    type="button"
+                  >
+                    <Settings aria-hidden="true" className="size-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="mt-6 flex items-end justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-medium text-[var(--color-muted)]">
-                    Projekt · Śląskie
+                    Projekt
                   </p>
                   <h2 className="mt-1 text-xl font-semibold">
-                    Lista nieruchomości
+                    {activeProject?.name ?? "Brak projektu"}
                   </h2>
+                  <p className="mt-1 truncate text-xs text-[var(--color-muted)]">
+                    {currentUser?.email ?? "Nie zalogowano"}
+                  </p>
                 </div>
-                <button className="icon-button shrink-0" aria-label="Filtry listy">
+                <button
+                  className="icon-button shrink-0"
+                  aria-label="Filtry listy"
+                  aria-pressed={filtersOpen}
+                  onClick={() => setFiltersOpen((isOpen) => !isOpen)}
+                  type="button"
+                >
                   <SlidersHorizontal aria-hidden="true" className="size-4" />
                 </button>
               </div>
+              {filtersOpen ? (
+                <div className="list-filter-panel" aria-label="Filtry listy">
+                  <div className="filter-group">
+                    <span>Typ</span>
+                    <div className="filter-chip-row">
+                      <button
+                        className="filter-chip"
+                        data-active={propertyTypeFilter === "all"}
+                        onClick={() => setPropertyTypeFilter("all")}
+                        type="button"
+                      >
+                        Wszystkie
+                      </button>
+                      <button
+                        className="filter-chip"
+                        data-active={propertyTypeFilter === "land"}
+                        onClick={() => setPropertyTypeFilter("land")}
+                        type="button"
+                      >
+                        Działki
+                      </button>
+                      <button
+                        className="filter-chip"
+                        data-active={propertyTypeFilter === "house"}
+                        onClick={() => setPropertyTypeFilter("house")}
+                        type="button"
+                      >
+                        Domy
+                      </button>
+                    </div>
+                  </div>
+
+                  <label className="filter-field">
+                    <span>Status</span>
+                    <select
+                      value={propertyStatusFilter}
+                      onChange={(event) =>
+                        setPropertyStatusFilter(event.target.value as PropertyStatusFilter)
+                      }
+                    >
+                      <option value="all">Wszystkie statusy</option>
+                      {propertyStatuses.map((status) => (
+                        <option key={status} value={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="filter-field">
+                    <span>Ocena od</span>
+                    <select
+                      value={minimumRatingFilter}
+                      onChange={(event) =>
+                        setMinimumRatingFilter(Number(event.target.value))
+                      }
+                    >
+                      {ratingFilterOptions.map((rating) => (
+                        <option key={rating} value={rating}>
+                          {rating === 0 ? "Dowolna" : `${rating}+`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="filter-summary">
+                    <span>
+                      {filteredProperties.length} z {properties.length}
+                    </span>
+                    {filtersActive ? (
+                      <button
+                        className="filter-reset"
+                        onClick={() => {
+                          setPropertyTypeFilter("all");
+                          setPropertyStatusFilter("all");
+                          setMinimumRatingFilter(0);
+                        }}
+                        type="button"
+                      >
+                        Wyczyść
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
@@ -1806,7 +2449,7 @@ export default function HomePage() {
                   {propertiesLoadError}
                 </p>
               ) : null}
-              {properties.map((property) => (
+              {filteredProperties.map((property) => (
                 <button
                   className="property-card"
                   data-selected={property.id === selectedPropertyId}
@@ -1853,6 +2496,23 @@ export default function HomePage() {
                   >
                     <Plus aria-hidden="true" className="size-4" />
                     Dodaj
+                  </button>
+                </div>
+              ) : null}
+              {properties.length > 0 && filteredProperties.length === 0 ? (
+                <div className="empty-state">
+                  <SlidersHorizontal aria-hidden="true" className="size-5" />
+                  <p>Brak wyników dla aktywnych filtrów.</p>
+                  <button
+                    className="secondary-button justify-center"
+                    onClick={() => {
+                      setPropertyTypeFilter("all");
+                      setPropertyStatusFilter("all");
+                      setMinimumRatingFilter(0);
+                    }}
+                    type="button"
+                  >
+                    Wyczyść filtry
                   </button>
                 </div>
               ) : null}
@@ -2003,14 +2663,6 @@ export default function HomePage() {
             type="button"
           >
             <LocateFixed aria-hidden="true" className="size-5" />
-          </button>
-          <button
-            className="icon-button pointer-events-auto"
-            aria-label="Wyśrodkuj mapę"
-            onClick={resetMapPosition}
-            type="button"
-          >
-            <Compass aria-hidden="true" className="size-4" />
           </button>
           <button
             className="map-add-button"
@@ -2191,6 +2843,158 @@ export default function HomePage() {
                   {deleteActionError}
                 </p>
               ) : null}
+            </section>
+          </div>
+        ) : null}
+
+        {settingsOpen ? (
+          <div className="details-backdrop" role="presentation">
+            <section className="details-panel" aria-labelledby="settings-title">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--color-muted)]">
+                    Bezpieczeństwo i współpraca
+                  </p>
+                  <h2 className="mt-2 text-2xl font-semibold" id="settings-title">
+                    Ustawienia projektu
+                  </h2>
+                </div>
+                <button
+                  className="icon-button"
+                  aria-label="Zamknij ustawienia"
+                  onClick={() => setSettingsOpen(false)}
+                  type="button"
+                >
+                  <X aria-hidden="true" className="size-4" />
+                </button>
+              </div>
+
+              {!currentUser ? (
+                <form className="property-form" onSubmit={signInWithEmail}>
+                  <label className="form-field">
+                    <span>Email</span>
+                    <input
+                      autoComplete="email"
+                      value={authEmail}
+                      onChange={(event) => setAuthEmail(event.target.value)}
+                      placeholder="piver2@gmail.com"
+                      type="email"
+                    />
+                  </label>
+                  {authMessage ? (
+                    <p className="form-help" role="status">
+                      {authMessage}
+                    </p>
+                  ) : null}
+                  <button className="primary-button justify-center" type="submit">
+                    <LogIn aria-hidden="true" className="size-4" />
+                    Wyślij link logowania
+                  </button>
+                </form>
+              ) : (
+                <div className="property-form">
+                  <div className="settings-summary">
+                    <div>
+                      <span>Zalogowano jako</span>
+                      <strong>{currentUser.email}</strong>
+                    </div>
+                    <button className="secondary-button" onClick={signOut} type="button">
+                      <LogOut aria-hidden="true" className="size-4" />
+                      Wyloguj
+                    </button>
+                  </div>
+
+                  <label className="form-field">
+                    <span>Aktywny projekt</span>
+                    <select
+                      value={activeProjectId ?? ""}
+                      onChange={(event) => setActiveProjectId(event.target.value || null)}
+                    >
+                      {projects.length === 0 ? (
+                        <option value="">Brak projektów</option>
+                      ) : null}
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <form className="settings-inline-form" onSubmit={createProject}>
+                    <label className="form-field">
+                      <span>Nowy projekt</span>
+                      <input
+                        value={projectName}
+                        onChange={(event) => setProjectName(event.target.value)}
+                        placeholder="np. Dom pod Katowicami"
+                      />
+                    </label>
+                    <button className="secondary-button justify-center" type="submit">
+                      <FolderPlus aria-hidden="true" className="size-4" />
+                      Utwórz
+                    </button>
+                  </form>
+
+                  <form className="settings-inline-form" onSubmit={inviteCollaborator}>
+                    <label className="form-field">
+                      <span>Zaproszenie</span>
+                      <input
+                        value={inviteEmail}
+                        onChange={(event) => setInviteEmail(event.target.value)}
+                        placeholder="email@przyklad.pl"
+                        type="email"
+                      />
+                    </label>
+                    <button
+                      className="secondary-button justify-center"
+                      disabled={!activeProjectId}
+                      type="submit"
+                    >
+                      <UserPlus aria-hidden="true" className="size-4" />
+                      Zaproś
+                    </button>
+                  </form>
+
+                  <div className="settings-list">
+                    <h3>Członkowie</h3>
+                    {projectMembers.length > 0 ? (
+                      projectMembers.map((member) => (
+                        <div className="settings-list-row" key={`${member.projectId}-${member.userId}`}>
+                          <span>{member.userId}</span>
+                          <strong>{member.role}</strong>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-[var(--color-muted)]">
+                        Brak widocznych członków albo brak uprawnień admina.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="settings-list">
+                    <h3>Zaproszenia</h3>
+                    {projectInvitations.length > 0 ? (
+                      projectInvitations.map((invitation) => (
+                        <div className="settings-list-row" key={invitation.id}>
+                          <span>{invitation.email}</span>
+                          <strong>{invitation.acceptedAt ? "przyjęte" : invitation.role}</strong>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-[var(--color-muted)]">
+                        Brak zaproszeń dla aktywnego projektu.
+                      </p>
+                    )}
+                  </div>
+
+                  {settingsError ? (
+                    <p className="form-error" role="alert">
+                      {settingsError}
+                    </p>
+                  ) : null}
+                </div>
+              )}
             </section>
           </div>
         ) : null}
@@ -2395,7 +3199,7 @@ export default function HomePage() {
                           <Info aria-hidden="true" className="size-3.5" />
                         </button>
                         <span className="info-popover__content" id="photos-help" role="tooltip">
-                          Zdjęcia są na razie przechowywane lokalnie w tej wersji demo. Docelowo trafią do Supabase Storage.
+                          Nowe zdjęcia trafiają do prywatnego Supabase Storage i są dostępne tylko dla członków aktywnego projektu.
                         </span>
                       </span>
                     </h3>
