@@ -3056,7 +3056,36 @@ export default function HomePage() {
                 </button>
               </div>
 
-              {!currentUser ? (
+              {passwordRecoveryOpen ? (
+                <div className="property-form">
+                  <form className="auth-form" onSubmit={updateRecoveredPassword}>
+                    <label className="form-field">
+                      <span>Nowe hasło</span>
+                      <input
+                        autoComplete="new-password"
+                        value={newAuthPassword}
+                        onChange={(event) => setNewAuthPassword(event.target.value)}
+                        placeholder="Minimum 6 znaków"
+                        type="password"
+                      />
+                    </label>
+                    <button
+                      className="primary-button justify-center"
+                      disabled={authBusy}
+                      type="submit"
+                    >
+                      <KeyRound aria-hidden="true" className="size-4" />
+                      {authBusy ? "Zapisuję..." : "Zapisz nowe hasło"}
+                    </button>
+                  </form>
+
+                  {authMessage ? (
+                    <p className="form-help" role="status">
+                      {authMessage}
+                    </p>
+                  ) : null}
+                </div>
+              ) : !currentUser ? (
                 <div className="property-form">
                   <div className="auth-mode-toggle" aria-label="Tryb logowania">
                     <button
@@ -3137,29 +3166,6 @@ export default function HomePage() {
                 </div>
               ) : (
                 <div className="property-form">
-                  {passwordRecoveryOpen ? (
-                    <form className="auth-form" onSubmit={updateRecoveredPassword}>
-                      <label className="form-field">
-                        <span>Nowe hasło</span>
-                        <input
-                          autoComplete="new-password"
-                          value={newAuthPassword}
-                          onChange={(event) => setNewAuthPassword(event.target.value)}
-                          placeholder="Minimum 6 znaków"
-                          type="password"
-                        />
-                      </label>
-                      <button
-                        className="primary-button justify-center"
-                        disabled={authBusy}
-                        type="submit"
-                      >
-                        <KeyRound aria-hidden="true" className="size-4" />
-                        {authBusy ? "Zapisuję..." : "Zapisz nowe hasło"}
-                      </button>
-                    </form>
-                  ) : null}
-
                   <div className="settings-summary">
                     <div>
                       <span>Zalogowano jako</span>

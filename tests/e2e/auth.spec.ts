@@ -108,6 +108,6 @@ test("password recovery link opens the new password form", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Ustawienia projektu" })).toBeVisible();
   await expect(page.getByText("Ustaw nowe hasło do konta.")).toBeVisible();
-  await expect(page.getByLabel("Nowe hasło")).toBeVisible();
+  await expect(page.getByPlaceholder("Minimum 6 znaków")).toBeVisible();
   await expect(page.getByRole("button", { name: "Zapisz nowe hasło" })).toBeVisible();
 });
