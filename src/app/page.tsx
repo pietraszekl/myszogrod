@@ -1264,6 +1264,16 @@ function omitSourceUrl<T extends { source_url?: string | null }>(payload: T) {
   return payloadWithoutSourceUrl;
 }
 
+function getAuthRedirectUrl(kind: "default" | "recovery" = "default") {
+  const origin = window.location.origin;
+
+  if (kind === "recovery") {
+    return `${origin}/?auth=recovery`;
+  }
+
+  return origin;
+}
+
 export default function HomePage() {
   const [properties, setProperties] = useState(initialProperties);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
@@ -1355,6 +1365,58 @@ export default function HomePage() {
     const supabase = createSupabaseClient();
     let ignoreAuth = false;
 
+    function showPasswordRecovery(message = "Ustaw nowe hasło do konta.") {
+      setPasswordRecoveryOpen(true);
+      setSettingsOpen(true);
+      setAuthMessage(message);
+    }
+
+    async function handleAuthRedirect() {
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get("code");
+      const authIntent = url.searchParams.get("auth");
+      const authError = url.searchParams.get("auth_error");
+      const authType = url.searchParams.get("type");
+      const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+      const hashType = hashParams.get("type");
+      const hashError = hashParams.get("error_description") ?? hashParams.get("error");
+      const isRecoveryRedirect =
+        authIntent === "recovery" ||
+        authType === "recovery" ||
+        hashType === "recovery";
+
+      if (authError || hashError) {
+        setSettingsOpen(true);
+        setAuthMessage(`Link logowania/resetu hasła nie zadziałał: ${authError ?? hashError}`);
+        url.searchParams.delete("auth_error");
+        window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        return;
+      }
+
+      if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+        url.searchParams.delete("code");
+        url.searchParams.delete("auth");
+        url.searchParams.delete("type");
+        window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+
+        if (error) {
+          setSettingsOpen(true);
+          setAuthMessage(`Nie udało się użyć linku z emaila: ${error.message}`);
+          return;
+        }
+
+        if (isRecoveryRedirect) {
+          showPasswordRecovery();
+        }
+      } else if (isRecoveryRedirect || hashParams.has("access_token")) {
+        showPasswordRecovery();
+      }
+    }
+
+    void handleAuthRedirect();
+
     supabase.auth.getUser().then(({ data }) => {
       if (!ignoreAuth) {
         setCurrentUser(data.user);
@@ -1365,9 +1427,7 @@ export default function HomePage() {
       setCurrentUser(session?.user ?? null);
 
       if (event === "PASSWORD_RECOVERY") {
-        setPasswordRecoveryOpen(true);
-        setSettingsOpen(true);
-        setAuthMessage("Ustaw nowe hasło do konta.");
+        showPasswordRecovery();
       }
     });
 
@@ -1647,7 +1707,7 @@ export default function HomePage() {
               email,
               password,
               options: {
-                emailRedirectTo: window.location.origin,
+                emailRedirectTo: getAuthRedirectUrl(),
               },
             })
           : await supabase.auth.signInWithPassword({
@@ -1690,7 +1750,7 @@ export default function HomePage() {
     try {
       const supabase = createSupabaseClient();
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: window.location.origin,
+        redirectTo: getAuthRedirectUrl("recovery"),
       });
 
       if (error) {

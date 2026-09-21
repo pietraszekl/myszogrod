@@ -4,6 +4,25 @@ async function mockAnonymousSupabase(page: Page) {
   await page.route("**/*.supabase.co/**", async (route) => {
     const url = new URL(route.request().url());
 
+    if (url.pathname.includes("/auth/v1/token")) {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          access_token: "test-access-token",
+          refresh_token: "test-refresh-token",
+          expires_in: 3600,
+          token_type: "bearer",
+          user: {
+            id: "test-user-id",
+            aud: "authenticated",
+            role: "authenticated",
+            email: "test@example.com",
+          },
+        }),
+      });
+      return;
+    }
+
     if (url.pathname.includes("/auth/v1/user")) {
       await route.fulfill({
         contentType: "application/json",
@@ -57,4 +76,38 @@ test("login panel supports sign in, registration, and password reset without pri
   await expect(page.getByRole("button", { name: "Utwórz konto" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Google" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "GitHub" })).toHaveCount(0);
+});
+
+test("password recovery link opens the new password form", async ({ page }) => {
+  await page.unroute("**/*.supabase.co/**");
+  await page.route("**/*.supabase.co/**", async (route) => {
+    const url = new URL(route.request().url());
+
+    if (url.pathname.includes("/auth/v1/user")) {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          user: {
+            id: "test-user-id",
+            aud: "authenticated",
+            role: "authenticated",
+            email: "test@example.com",
+          },
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({}),
+    });
+  });
+
+  await page.goto("/?auth=recovery");
+
+  await expect(page.getByRole("heading", { name: "Ustawienia projektu" })).toBeVisible();
+  await expect(page.getByText("Ustaw nowe hasło do konta.")).toBeVisible();
+  await expect(page.getByLabel("Nowe hasło")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Zapisz nowe hasło" })).toBeVisible();
 });
