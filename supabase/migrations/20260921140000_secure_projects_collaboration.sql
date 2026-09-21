@@ -110,40 +110,15 @@ execute function public.add_project_owner_member();
 
 do $$
 declare
-  owner_user_id uuid;
-  default_project_id uuid;
+  orphan_properties_count integer;
 begin
-  select id into owner_user_id
-  from auth.users
-  where lower(email) = lower('piver2@gmail.com')
-  limit 1;
-
-  if owner_user_id is null then
-    raise exception 'Cannot secure data: auth user piver2@gmail.com does not exist yet.';
-  end if;
-
-  insert into public.projects (name, owner_id)
-  values ('Myszogród', owner_user_id)
-  on conflict do nothing
-  returning id into default_project_id;
-
-  if default_project_id is null then
-    select id into default_project_id
-    from public.projects
-    where owner_id = owner_user_id
-    order by created_at
-    limit 1;
-  end if;
-
-  insert into public.project_members (project_id, user_id, role)
-  values (default_project_id, owner_user_id, 'owner')
-  on conflict (project_id, user_id) do update set role = 'owner';
-
-  update public.properties
-  set
-    project_id = default_project_id,
-    created_by = coalesce(created_by, owner_user_id)
+  select count(*) into orphan_properties_count
+  from public.properties
   where project_id is null;
+
+  if orphan_properties_count > 0 then
+    raise exception 'Cannot secure existing properties: backfill project_id and created_by before enforcing project membership.';
+  end if;
 end;
 $$;
 

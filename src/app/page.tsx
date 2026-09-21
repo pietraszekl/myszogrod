@@ -29,9 +29,11 @@ import {
   FolderPlus,
   Home,
   Info,
+  KeyRound,
   LocateFixed,
   LogIn,
   LogOut,
+  Mail,
   MapPin,
   Mountain,
   Pencil,
@@ -50,6 +52,7 @@ type PropertyType = "land" | "house";
 type PropertyStatus = "Do obejrzenia" | "Obiecujące" | "W trakcie" | "Odrzucone";
 type PropertyTypeFilter = "all" | PropertyType;
 type PropertyStatusFilter = "all" | PropertyStatus;
+type AuthMode = "sign-in" | "sign-up";
 type Coordinates = {
   lat: number;
   lng: number;
@@ -1270,8 +1273,11 @@ export default function HomePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingPropertyId, setEditingPropertyId] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [authEmail, setAuthEmail] = useState("piver2@gmail.com");
+  const [authMode, setAuthMode] = useState<AuthMode>("sign-in");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
   const [authMessage, setAuthMessage] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
@@ -1608,31 +1614,80 @@ export default function HomePage() {
     updateCurrentLocation();
   }
 
-  async function signInWithEmail(event: FormEvent<HTMLFormElement>) {
+  async function handleEmailPasswordAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const email = authEmail.trim();
+    const password = authPassword;
 
     if (!email) {
       setAuthMessage("Podaj adres email.");
       return;
     }
 
+    if (password.length < 6) {
+      setAuthMessage("Hasło musi mieć co najmniej 6 znaków.");
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage("");
+
     try {
       const supabase = createSupabaseClient();
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
+      const { error } =
+        authMode === "sign-up"
+          ? await supabase.auth.signUp({
+              email,
+              password,
+              options: {
+                emailRedirectTo: window.location.origin,
+              },
+            })
+          : await supabase.auth.signInWithPassword({
+              email,
+              password,
+            });
+
+      if (error) {
+        throw error;
+      }
+
+      setAuthPassword("");
+      setAuthMessage(
+        authMode === "sign-up"
+          ? "Konto zostało utworzone. Jeśli Supabase wymaga potwierdzenia emaila, sprawdź skrzynkę."
+          : "Zalogowano pomyślnie.",
+      );
+    } catch (error) {
+      setAuthMessage(
+        authMode === "sign-up"
+          ? `Nie udało się utworzyć konta: ${getErrorMessage(error)}`
+          : `Nie udało się zalogować: ${getErrorMessage(error)}`,
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signInWithProvider(provider: "google" | "github") {
+    setAuthBusy(true);
+    setAuthMessage("");
+
+    try {
+      const supabase = createSupabaseClient();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
         options: {
-          emailRedirectTo: window.location.origin,
+          redirectTo: window.location.origin,
         },
       });
 
       if (error) {
         throw error;
       }
-
-      setAuthMessage("Wysłano link logowania. Sprawdź skrzynkę email.");
     } catch (error) {
-      setAuthMessage(`Nie udało się wysłać linku: ${getErrorMessage(error)}`);
+      setAuthBusy(false);
+      setAuthMessage(`Nie udało się uruchomić SSO: ${getErrorMessage(error)}`);
     }
   }
 
@@ -1772,6 +1827,11 @@ export default function HomePage() {
   }, [updateCurrentLocation]);
 
   const openAddProperty = useCallback((coordinates?: Coordinates) => {
+    if (!currentUser) {
+      setSettingsOpen(true);
+      return;
+    }
+
     setPropertyForm({
       ...createInitialPropertyForm(),
       location: coordinates ? formatManualLocationLabel(coordinates) : "",
@@ -1781,7 +1841,7 @@ export default function HomePage() {
     setManualPropertyCoordinates(coordinates ?? null);
     setAddressLookup(idleAddressLookup);
     setAddPropertyOpen(true);
-  }, []);
+  }, [currentUser]);
 
   const openEditProperty = useCallback((property: Property) => {
     setPropertyForm(createPropertyFormFromProperty(property));
@@ -2488,15 +2548,21 @@ export default function HomePage() {
               {properties.length === 0 ? (
                 <div className="empty-state">
                   <MapPin aria-hidden="true" className="size-5" />
-                  <p>Brak nieruchomości. Dodaj pierwszą pozycję ręcznie.</p>
-                  <button
-                    className="secondary-button justify-center"
-                    onClick={() => openAddProperty()}
-                    type="button"
-                  >
-                    <Plus aria-hidden="true" className="size-4" />
-                    Dodaj
-                  </button>
+                  <p>
+                    {currentUser
+                      ? "Brak nieruchomości. Dodaj pierwszą pozycję ręcznie."
+                      : "Zaloguj się, aby zobaczyć i dodawać nieruchomości."}
+                  </p>
+                  {currentUser ? (
+                    <button
+                      className="secondary-button justify-center"
+                      onClick={() => openAddProperty()}
+                      type="button"
+                    >
+                      <Plus aria-hidden="true" className="size-4" />
+                      Dodaj
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
               {properties.length > 0 && filteredProperties.length === 0 ? (
@@ -2664,14 +2730,16 @@ export default function HomePage() {
           >
             <LocateFixed aria-hidden="true" className="size-5" />
           </button>
-          <button
-            className="map-add-button"
-            aria-label="Dodaj nieruchomość"
-            onClick={() => openAddProperty()}
-            type="button"
-          >
-            <Plus aria-hidden="true" className="size-5" />
-          </button>
+          {currentUser ? (
+            <button
+              className="map-add-button"
+              aria-label="Dodaj nieruchomość"
+              onClick={() => openAddProperty()}
+              type="button"
+            >
+              <Plus aria-hidden="true" className="size-5" />
+            </button>
+          ) : null}
         </div>
 
         {detailsOpen && selectedProperty && selectedPropertyRating !== null ? (
@@ -2870,27 +2938,92 @@ export default function HomePage() {
               </div>
 
               {!currentUser ? (
-                <form className="property-form" onSubmit={signInWithEmail}>
-                  <label className="form-field">
-                    <span>Email</span>
-                    <input
-                      autoComplete="email"
-                      value={authEmail}
-                      onChange={(event) => setAuthEmail(event.target.value)}
-                      placeholder="piver2@gmail.com"
-                      type="email"
-                    />
-                  </label>
+                <div className="property-form">
+                  <div className="auth-mode-toggle" aria-label="Tryb logowania">
+                    <button
+                      data-active={authMode === "sign-in"}
+                      onClick={() => {
+                        setAuthMode("sign-in");
+                        setAuthMessage("");
+                      }}
+                      type="button"
+                    >
+                      Logowanie
+                    </button>
+                    <button
+                      data-active={authMode === "sign-up"}
+                      onClick={() => {
+                        setAuthMode("sign-up");
+                        setAuthMessage("");
+                      }}
+                      type="button"
+                    >
+                      Rejestracja
+                    </button>
+                  </div>
+
+                  <form className="auth-form" onSubmit={handleEmailPasswordAuth}>
+                    <label className="form-field">
+                      <span>Email</span>
+                      <input
+                        autoComplete="email"
+                        value={authEmail}
+                        onChange={(event) => setAuthEmail(event.target.value)}
+                        placeholder="email@przyklad.pl"
+                        type="email"
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>Hasło</span>
+                      <input
+                        autoComplete={authMode === "sign-up" ? "new-password" : "current-password"}
+                        value={authPassword}
+                        onChange={(event) => setAuthPassword(event.target.value)}
+                        placeholder="Minimum 6 znaków"
+                        type="password"
+                      />
+                    </label>
+                    <button className="primary-button justify-center" disabled={authBusy} type="submit">
+                      {authMode === "sign-up" ? (
+                        <KeyRound aria-hidden="true" className="size-4" />
+                      ) : (
+                        <LogIn aria-hidden="true" className="size-4" />
+                      )}
+                      {authMode === "sign-up" ? "Utwórz konto" : "Zaloguj"}
+                    </button>
+                  </form>
+
+                  <div className="auth-divider">
+                    <span>albo</span>
+                  </div>
+
+                  <div className="auth-provider-grid">
+                    <button
+                      className="secondary-button justify-center"
+                      disabled={authBusy}
+                      onClick={() => signInWithProvider("google")}
+                      type="button"
+                    >
+                      <Mail aria-hidden="true" className="size-4" />
+                      Google
+                    </button>
+                    <button
+                      className="secondary-button justify-center"
+                      disabled={authBusy}
+                      onClick={() => signInWithProvider("github")}
+                      type="button"
+                    >
+                      <KeyRound aria-hidden="true" className="size-4" />
+                      GitHub
+                    </button>
+                  </div>
+
                   {authMessage ? (
                     <p className="form-help" role="status">
                       {authMessage}
                     </p>
                   ) : null}
-                  <button className="primary-button justify-center" type="submit">
-                    <LogIn aria-hidden="true" className="size-4" />
-                    Wyślij link logowania
-                  </button>
-                </form>
+                </div>
               ) : (
                 <div className="property-form">
                   <div className="settings-summary">
