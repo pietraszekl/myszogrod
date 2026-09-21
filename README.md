@@ -12,7 +12,7 @@ Phase 1 integration work has started:
 - mobile-first, map-first application shell
 - documented master prompt
 - Supabase browser/server clients
-- Google Maps runtime integration with a demo-map fallback
+- OpenFreeMap + MapLibre runtime integration
 
 The current home screen still uses explicitly marked demo data to validate layout, marker language, rating colors, and responsive structure before Supabase tables, Auth, Storage, and RLS are connected.
 
@@ -31,17 +31,13 @@ Secrets must live in local environment files only. Do not commit `.env` or `.env
 Expected variables:
 
 ```env
-NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
-NEXT_PUBLIC_GOOGLE_MAP_ID=
-
 NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 
 SUPABASE_SERVICE_ROLE_KEY=
 ```
 
-Use either `NEXT_PUBLIC_SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` for browser-safe Supabase access. `SUPABASE_SERVICE_ROLE_KEY` must never be exposed to browser code.
+Use `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` for browser-safe Supabase access. `NEXT_PUBLIC_SUPABASE_ANON_KEY` is supported only as a backward-compatible fallback. `SUPABASE_SERVICE_ROLE_KEY` must never be exposed to browser code.
 
 ## Implementation Order
 
@@ -50,7 +46,7 @@ Use either `NEXT_PUBLIC_SUPABASE_ANON_KEY` or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_
 3. Phase 2: users, roles, Superadmin.
 4. Phase 3: projects, memberships, join requests.
 5. Phase 4: property data model.
-6. Phase 5: Google Maps.
+6. Phase 5: OpenFreeMap / MapLibre.
 7. Phase 6: custom SVG markers.
 8. Phase 7: property creation.
 9. Phase 8: rating system.

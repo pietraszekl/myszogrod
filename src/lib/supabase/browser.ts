@@ -3,7 +3,7 @@ import { createBrowserClient } from "@supabase/ssr";
 import { assertSupabaseBrowserEnv } from "./env";
 
 export function createClient() {
-  const { supabaseUrl, supabaseAnonKey } = assertSupabaseBrowserEnv();
+  const { supabaseUrl, supabasePublishableKey } = assertSupabaseBrowserEnv();
 
-  return createBrowserClient(supabaseUrl, supabaseAnonKey);
+  return createBrowserClient(supabaseUrl, supabasePublishableKey);
 }

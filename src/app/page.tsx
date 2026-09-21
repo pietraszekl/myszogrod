@@ -3,35 +3,41 @@
 import {
   type ChangeEvent,
   type FormEvent,
-  type PointerEvent,
+  useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import {
-  AdvancedMarker,
-  APIProvider,
-  Map,
-} from "@vis.gl/react-google-maps";
+  AttributionControl,
+  type GeoJSONSource,
+  Map as MapLibre,
+  type Map as MapLibreMap,
+  Marker,
+  setWorkerUrl,
+} from "maplibre-gl";
 import {
   Bell,
   Camera,
-  ChevronDown,
   Compass,
   ExternalLink,
   Filter,
   Home,
   Layers3,
+  LocateFixed,
   MapPin,
-  Maximize2,
   MessageSquareText,
   Mountain,
+  Navigation2,
   Plus,
-  Search,
   SlidersHorizontal,
   Star,
-  Users,
   X,
 } from "lucide-react";
+
+import { createClient as createSupabaseClient } from "@/lib/supabase/browser";
 
 type PropertyType = "land" | "house";
 type PropertyFilter = "all" | PropertyType;
@@ -40,6 +46,7 @@ type Coordinates = {
   lat: number;
   lng: number;
 };
+type LocationStatus = "idle" | "loading" | "ready" | "denied" | "unsupported" | "error";
 
 type PropertyFormState = {
   title: string;
@@ -80,10 +87,116 @@ type Property = {
   y: number;
 };
 
-const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
-const googleMapsMapId = process.env.NEXT_PUBLIC_GOOGLE_MAP_ID ?? "";
-const hasGoogleMapsConfig = Boolean(googleMapsApiKey && googleMapsMapId);
+type PropertyRow = {
+  id: string;
+  title: string;
+  property_type: PropertyType;
+  location: string;
+  price: string;
+  area: string;
+  status: PropertyStatus;
+  description: string;
+  note_count: number;
+  photo_count: number;
+  photos: unknown;
+  criteria: unknown;
+  coordinates: unknown;
+  x: number | string;
+  y: number | string;
+};
+
+type PropertyInsert = {
+  title: string;
+  property_type: PropertyType;
+  location: string;
+  price: string;
+  area: string;
+  status: PropertyStatus;
+  description: string;
+  note_count: number;
+  photo_count: number;
+  photos: PropertyPhoto[];
+  criteria: Property["criteria"];
+  coordinates: Coordinates;
+  x: number;
+  y: number;
+};
+
 const defaultMapCenter: Coordinates = { lat: 50.1908, lng: 18.9238 };
+const openFreeMapStyleUrl = "https://tiles.openfreemap.org/styles/liberty";
+const userLocationRadiusKm = 2;
+const userRadiusSourceId = "user-location-radius";
+const userRadiusFillLayerId = "user-location-radius-fill";
+const userRadiusLineLayerId = "user-location-radius-line";
+
+setWorkerUrl("/maplibre-gl-worker.mjs");
+
+function getMapViewportPadding() {
+  if (typeof window !== "undefined" && window.innerWidth >= 1024) {
+    return { bottom: 40, left: 430, right: 470, top: 110 };
+  }
+
+  return { bottom: 270, left: 20, right: 20, top: 112 };
+}
+
+function createEmptyFeatureCollection() {
+  return {
+    type: "FeatureCollection" as const,
+    features: [],
+  };
+}
+
+function createRadiusFeatureCollection(center: Coordinates, radiusKm: number) {
+  const steps = 96;
+  const earthRadiusKm = 6371;
+  const angularDistance = radiusKm / earthRadiusKm;
+  const latRad = (center.lat * Math.PI) / 180;
+  const lngRad = (center.lng * Math.PI) / 180;
+  const coordinates: [number, number][] = [];
+
+  for (let index = 0; index <= steps; index += 1) {
+    const bearing = (index / steps) * 2 * Math.PI;
+    const pointLatRad = Math.asin(
+      Math.sin(latRad) * Math.cos(angularDistance) +
+        Math.cos(latRad) * Math.sin(angularDistance) * Math.cos(bearing),
+    );
+    const pointLngRad =
+      lngRad +
+      Math.atan2(
+        Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latRad),
+        Math.cos(angularDistance) - Math.sin(latRad) * Math.sin(pointLatRad),
+      );
+
+    coordinates.push([
+      (pointLngRad * 180) / Math.PI,
+      (pointLatRad * 180) / Math.PI,
+    ]);
+  }
+
+  return {
+    type: "FeatureCollection" as const,
+    features: [
+      {
+        type: "Feature" as const,
+        properties: {},
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [coordinates],
+        },
+      },
+    ],
+  };
+}
+
+function getRadiusBounds(center: Coordinates, radiusKm: number) {
+  const latDelta = radiusKm / 111.32;
+  const lngDelta = radiusKm / (111.32 * Math.cos((center.lat * Math.PI) / 180));
+
+  return [
+    [center.lng - lngDelta, center.lat - latDelta],
+    [center.lng + lngDelta, center.lat + latDelta],
+  ] as [[number, number], [number, number]];
+}
 
 const criteriaByType: Record<PropertyType, string[]> = {
   land: [
@@ -108,116 +221,7 @@ const criteriaByType: Record<PropertyType, string[]> = {
   ],
 };
 
-const demoProperties: Property[] = [
-  {
-    id: "p1",
-    title: "Działka przy lesie",
-    type: "land",
-    location: "Mikołów, Śląskie",
-    price: "392 000 zł",
-    area: "1 180 m²",
-    status: "Obiecujące",
-    description:
-      "Najmocniejszy kandydat w tej chwili: spokojne otoczenie, dobra ekspozycja i sensowny dojazd do Katowic.",
-    noteCount: 6,
-    photoCount: 14,
-    photos: [],
-    criteria: [
-      { label: "Dojazd do Katowic", score: 9 },
-      { label: "Media w drodze", score: 8 },
-      { label: "Szkody górnicze", score: 9 },
-      { label: "Sąsiedzi i otoczenie", score: 9 },
-      { label: "Droga dojazdowa", score: 8 },
-      { label: "MPZP / warunki zabudowy", score: 8 },
-      { label: "Kształt i ustawność działki", score: 9 },
-      { label: "Hałas i uciążliwości", score: 8 },
-    ],
-    coordinates: { lat: 50.171, lng: 18.904 },
-    x: 42,
-    y: 38,
-  },
-  {
-    id: "p2",
-    title: "Dom z dużym ogrodem",
-    type: "house",
-    location: "Tychy, Śląskie",
-    price: "1 140 000 zł",
-    area: "152 m² / 920 m²",
-    status: "Do obejrzenia",
-    description:
-      "Dobry dom rodzinny z dużą działką. Wymaga sprawdzenia kosztów ogrzewania i stanu instalacji.",
-    noteCount: 4,
-    photoCount: 22,
-    photos: [],
-    criteria: [
-      { label: "Dojazd do Katowic", score: 8 },
-      { label: "Stan techniczny", score: 7 },
-      { label: "Szkody górnicze", score: 7 },
-      { label: "Sąsiedzi i otoczenie", score: 8 },
-      { label: "Układ pomieszczeń", score: 7 },
-      { label: "Ogrzewanie i koszty utrzymania", score: 6 },
-      { label: "Stan działki / ogrodu", score: 9 },
-      { label: "Hałas i uciążliwości", score: 7 },
-    ],
-    coordinates: { lat: 50.121, lng: 18.986 },
-    x: 61,
-    y: 54,
-  },
-  {
-    id: "p3",
-    title: "Parcela blisko DK81",
-    type: "land",
-    location: "Żory, Śląskie",
-    price: "278 000 zł",
-    area: "970 m²",
-    status: "W trakcie",
-    description:
-      "Praktyczna lokalizacja i niezły potencjał, ale trzeba zweryfikować hałas oraz warunki zabudowy.",
-    noteCount: 3,
-    photoCount: 8,
-    photos: [],
-    criteria: [
-      { label: "Dojazd do Katowic", score: 5 },
-      { label: "Media w drodze", score: 6 },
-      { label: "Szkody górnicze", score: 6 },
-      { label: "Sąsiedzi i otoczenie", score: 6 },
-      { label: "Droga dojazdowa", score: 8 },
-      { label: "MPZP / warunki zabudowy", score: 7 },
-      { label: "Kształt i ustawność działki", score: 7 },
-      { label: "Hałas i uciążliwości", score: 5 },
-    ],
-    coordinates: { lat: 50.045, lng: 18.7 },
-    x: 52,
-    y: 71,
-  },
-  {
-    id: "p4",
-    title: "Dom do remontu",
-    type: "house",
-    location: "Katowice Podlesie",
-    price: "760 000 zł",
-    area: "118 m² / 640 m²",
-    status: "Odrzucone",
-    description:
-      "Cena jest interesująca, ale zakres remontu i ryzyko techniczne obniżają priorytet oględzin.",
-    noteCount: 9,
-    photoCount: 18,
-    photos: [],
-    criteria: [
-      { label: "Dojazd do Katowic", score: 9 },
-      { label: "Stan techniczny", score: 3 },
-      { label: "Szkody górnicze", score: 4 },
-      { label: "Sąsiedzi i otoczenie", score: 6 },
-      { label: "Układ pomieszczeń", score: 5 },
-      { label: "Ogrzewanie i koszty utrzymania", score: 4 },
-      { label: "Stan działki / ogrodu", score: 6 },
-      { label: "Hałas i uciążliwości", score: 5 },
-    ],
-    coordinates: { lat: 50.181, lng: 18.966 },
-    x: 33,
-    y: 58,
-  },
-];
+const initialProperties: Property[] = [];
 
 const initialPropertyForm: PropertyFormState = {
   title: "",
@@ -273,6 +277,112 @@ function createCoordinatesForIndex(index: number): Coordinates {
   };
 }
 
+function parseNumber(value: number | string, fallback: number) {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) ? parsedValue : fallback;
+}
+
+function parseCoordinates(value: unknown): Coordinates {
+  if (
+    value &&
+    typeof value === "object" &&
+    "lat" in value &&
+    "lng" in value &&
+    Number.isFinite(Number(value.lat)) &&
+    Number.isFinite(Number(value.lng))
+  ) {
+    return {
+      lat: Number(value.lat),
+      lng: Number(value.lng),
+    };
+  }
+
+  return defaultMapCenter;
+}
+
+function parseCriteria(value: unknown): Property["criteria"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((criterion) => {
+      if (
+        !criterion ||
+        typeof criterion !== "object" ||
+        !("label" in criterion) ||
+        !("score" in criterion)
+      ) {
+        return null;
+      }
+
+      const score = Number(criterion.score);
+      if (typeof criterion.label !== "string" || !Number.isFinite(score)) {
+        return null;
+      }
+
+      return {
+        label: criterion.label,
+        score,
+      };
+    })
+    .filter((criterion): criterion is Property["criteria"][number] => criterion !== null);
+}
+
+function parsePhotos(value: unknown): PropertyPhoto[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((photo) => {
+      if (
+        !photo ||
+        typeof photo !== "object" ||
+        !("id" in photo) ||
+        !("name" in photo) ||
+        !("url" in photo)
+      ) {
+        return null;
+      }
+
+      if (
+        typeof photo.id !== "string" ||
+        typeof photo.name !== "string" ||
+        typeof photo.url !== "string"
+      ) {
+        return null;
+      }
+
+      return {
+        id: photo.id,
+        name: photo.name,
+        url: photo.url,
+      };
+    })
+    .filter((photo): photo is PropertyPhoto => photo !== null);
+}
+
+function mapPropertyRow(row: PropertyRow): Property {
+  return {
+    id: row.id,
+    title: row.title,
+    type: row.property_type,
+    location: row.location,
+    price: row.price,
+    area: row.area,
+    status: row.status,
+    description: row.description,
+    noteCount: row.note_count,
+    photoCount: row.photo_count,
+    photos: parsePhotos(row.photos),
+    criteria: parseCriteria(row.criteria),
+    coordinates: parseCoordinates(row.coordinates),
+    x: parseNumber(row.x, 50),
+    y: parseNumber(row.y, 50),
+  };
+}
+
 function PropertyMarkerContent({
   property,
   rating,
@@ -292,64 +402,246 @@ function PropertyMarkerContent({
   );
 }
 
-function PropertyMarker({
-  property,
-  onSelect,
-  selected = false,
-}: {
-  property: Property;
-  onSelect: (propertyId: string) => void;
-  selected?: boolean;
-}) {
-  const rating = getPropertyRating(property);
-  const tone = ratingTone(rating);
-
+function UserLocationMarkerContent() {
   return (
-    <button
-      className="property-marker"
-      data-tone={tone}
-      data-selected={selected}
-      style={{ left: `${property.x}%`, top: `${property.y}%` }}
-      aria-label={`${property.title}, rating ${rating}`}
-      aria-pressed={selected}
-      onClick={() => onSelect(property.id)}
-      type="button"
-    >
-      <PropertyMarkerContent property={property} rating={rating} />
-    </button>
+    <>
+      <span className="user-location-marker__pulse" />
+      <span className="user-location-marker__core">
+        <Navigation2 aria-hidden="true" className="size-5 fill-current" />
+      </span>
+    </>
   );
 }
 
-function GooglePropertyMarker({
-  property,
+type MapMarkerInstance = {
+  marker: Marker;
+  root: Root;
+};
+
+function disposeMapMarker({ marker, root }: MapMarkerInstance) {
+  marker.remove();
+  queueMicrotask(() => {
+    root.unmount();
+  });
+}
+
+function OpenFreePropertyMap({
+  properties,
+  selectedPropertyId,
+  userLocation,
   onSelect,
-  selected = false,
+  resetToken,
 }: {
-  property: Property;
+  properties: Property[];
+  selectedPropertyId: string | null;
+  userLocation: Coordinates | null;
   onSelect: (propertyId: string) => void;
-  selected?: boolean;
+  resetToken: number;
 }) {
-  const rating = getPropertyRating(property);
-  const tone = ratingTone(rating);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<MapLibreMap | null>(null);
+  const markersRef = useRef<MapMarkerInstance[]>([]);
+  const userMarkerRef = useRef<MapMarkerInstance | null>(null);
+  const [mapStatus, setMapStatus] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) {
+      return;
+    }
+
+    const map = new MapLibre({
+      attributionControl: false,
+      center: [defaultMapCenter.lng, defaultMapCenter.lat],
+      container: containerRef.current,
+      pitch: 0,
+      style: openFreeMapStyleUrl,
+      zoom: 10,
+    });
+
+    map.on("load", () => {
+      map.addSource(userRadiusSourceId, {
+        type: "geojson",
+        data: createEmptyFeatureCollection(),
+      });
+      map.addLayer({
+        id: userRadiusFillLayerId,
+        type: "fill",
+        source: userRadiusSourceId,
+        paint: {
+          "fill-color": "#f3a43b",
+          "fill-opacity": 0.09,
+        },
+      });
+      map.addLayer({
+        id: userRadiusLineLayerId,
+        type: "line",
+        source: userRadiusSourceId,
+        paint: {
+          "line-color": "#f3a43b",
+          "line-opacity": 0.34,
+          "line-width": 1.5,
+        },
+      });
+      setMapStatus("ready");
+    });
+    map.on("error", () => {
+      if (!map.loaded()) {
+        setMapStatus("error");
+      }
+    });
+    map.addControl(new AttributionControl({ compact: true }), "bottom-left");
+    mapRef.current = map;
+
+    return () => {
+      markersRef.current.forEach(disposeMapMarker);
+      markersRef.current = [];
+      if (userMarkerRef.current) {
+        disposeMapMarker(userMarkerRef.current);
+        userMarkerRef.current = null;
+      }
+      map.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    markersRef.current.forEach(disposeMapMarker);
+    markersRef.current = properties.map((property) => {
+      const rating = getPropertyRating(property);
+      const markerElement = document.createElement("button");
+      markerElement.className = "property-marker maplibre-property-marker";
+      markerElement.dataset.tone = ratingTone(rating);
+      markerElement.dataset.selected = String(property.id === selectedPropertyId);
+      markerElement.type = "button";
+      markerElement.setAttribute("aria-label", `${property.title}, rating ${rating}`);
+      markerElement.setAttribute(
+        "aria-pressed",
+        String(property.id === selectedPropertyId),
+      );
+      markerElement.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onSelect(property.id);
+      });
+
+      const root = createRoot(markerElement);
+      root.render(<PropertyMarkerContent property={property} rating={rating} />);
+
+      const marker = new Marker({
+        anchor: "center",
+        element: markerElement,
+      })
+        .setLngLat([property.coordinates.lng, property.coordinates.lat])
+        .addTo(map);
+
+      return { marker, root };
+    });
+  }, [properties, selectedPropertyId, onSelect]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || mapStatus !== "ready") {
+      return;
+    }
+
+    const source = map.getSource(userRadiusSourceId) as GeoJSONSource | undefined;
+    source?.setData(
+      userLocation
+        ? createRadiusFeatureCollection(userLocation, userLocationRadiusKm)
+        : createEmptyFeatureCollection(),
+    );
+
+    if (userMarkerRef.current) {
+      disposeMapMarker(userMarkerRef.current);
+      userMarkerRef.current = null;
+    }
+
+    if (!userLocation) {
+      return;
+    }
+
+    const markerElement = document.createElement("div");
+    markerElement.className = "user-location-marker";
+    markerElement.setAttribute("aria-label", "Twoja obecna lokalizacja");
+    markerElement.setAttribute("role", "img");
+
+    const root = createRoot(markerElement);
+    root.render(<UserLocationMarkerContent />);
+
+    const marker = new Marker({
+      anchor: "center",
+      element: markerElement,
+    })
+      .setLngLat([userLocation.lng, userLocation.lat])
+      .addTo(map);
+
+    userMarkerRef.current = { marker, root };
+
+    map.fitBounds(getRadiusBounds(userLocation, userLocationRadiusKm), {
+      duration: 700,
+      maxZoom: 11.8,
+      padding: getMapViewportPadding(),
+    });
+  }, [mapStatus, userLocation]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    if (userLocation) {
+      map.fitBounds(getRadiusBounds(userLocation, userLocationRadiusKm), {
+        duration: 500,
+        maxZoom: 11.8,
+        padding: getMapViewportPadding(),
+      });
+      return;
+    }
+
+    map.easeTo({
+      center: [defaultMapCenter.lng, defaultMapCenter.lat],
+      duration: 500,
+      padding: getMapViewportPadding(),
+      zoom: 10,
+    });
+  }, [resetToken, userLocation]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const selectedProperty = properties.find(
+      (property) => property.id === selectedPropertyId,
+    );
+
+    if (!map || !selectedProperty) {
+      return;
+    }
+
+    map.easeTo({
+      center: [selectedProperty.coordinates.lng, selectedProperty.coordinates.lat],
+      duration: 550,
+      padding: getMapViewportPadding(),
+      zoom: Math.max(map.getZoom(), 10.8),
+    });
+  }, [properties, selectedPropertyId]);
 
   return (
-    <AdvancedMarker
-      position={property.coordinates}
-      title={`${property.title}, rating ${rating}`}
-      zIndex={selected ? 20 : 10}
+    <div
+      className="openfree-map-shell"
+      aria-label="Mapa OpenFreeMap z nieruchomościami"
+      data-map-status={mapStatus}
     >
-      <button
-        className="property-marker google-property-marker"
-        data-tone={tone}
-        data-selected={selected}
-        aria-label={`${property.title}, rating ${rating}`}
-        aria-pressed={selected}
-        onClick={() => onSelect(property.id)}
-        type="button"
-      >
-        <PropertyMarkerContent property={property} rating={rating} />
-      </button>
-    </AdvancedMarker>
+      <div ref={containerRef} className="openfree-map-canvas" />
+      {mapStatus === "error" ? (
+        <div className="map-load-error" role="status">
+          Nie udało się załadować mapy. Sprawdź połączenie z OpenFreeMap.
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -362,61 +654,88 @@ function RatingPill({ rating }: { rating: number }) {
   );
 }
 
+function getLocationStatusText(status: LocationStatus) {
+  if (status === "loading") return "Ustalam lokalizację...";
+  if (status === "ready") return "Promień 2 km aktywny";
+  if (status === "denied") return "Zezwól na lokalizację w przeglądarce";
+  if (status === "unsupported") return "Ta przeglądarka nie udostępnia lokalizacji";
+  if (status === "error") return "Nie udało się pobrać lokalizacji";
+  return "Pokaż moją lokalizację";
+}
+
 export default function HomePage() {
-  const [properties, setProperties] = useState(demoProperties);
-  const [selectedPropertyId, setSelectedPropertyId] = useState(demoProperties[0].id);
+  const [properties, setProperties] = useState(initialProperties);
+  const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [propertyFilter, setPropertyFilter] = useState<PropertyFilter>("all");
-  const [searchQuery, setSearchQuery] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [addPropertyOpen, setAddPropertyOpen] = useState(false);
   const [propertyForm, setPropertyForm] = useState<PropertyFormState>(
     createInitialPropertyForm(),
   );
   const [propertyFormError, setPropertyFormError] = useState("");
-  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
-  const [mapOffset, setMapOffset] = useState({ x: 0, y: 0 });
-  const [panStart, setPanStart] = useState<{
-    pointerX: number;
-    pointerY: number;
-    mapX: number;
-    mapY: number;
-  } | null>(null);
+  const [propertiesLoadError, setPropertiesLoadError] = useState("");
+  const [mapResetToken, setMapResetToken] = useState(0);
+  const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
 
   const filteredProperties = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase();
+    return properties.filter(
+      (property) => propertyFilter === "all" || property.type === propertyFilter,
+    );
+  }, [properties, propertyFilter]);
 
-    return properties.filter((property) => {
-      const matchesType = propertyFilter === "all" || property.type === propertyFilter;
-      const matchesQuery =
-        normalizedQuery.length === 0 ||
-        [
-          property.title,
-          property.location,
-          property.status,
-          property.price,
-          property.type === "land" ? "ziemia działka grunt" : "dom house",
-          property.criteria.map((criterion) => criterion.label).join(" "),
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(normalizedQuery);
-
-      return matchesType && matchesQuery;
-    });
-  }, [properties, propertyFilter, searchQuery]);
-
-  const selectedProperty =
-    properties.find((property) => property.id === selectedPropertyId) ?? properties[0];
-  const selectedPhotoCount = selectedProperty.photoCount + selectedProperty.photos.length;
-  const topProperty = properties.reduce((best, property) =>
-    getPropertyRating(property) > getPropertyRating(best) ? property : best,
-  );
-  const selectedPropertyRating = getPropertyRating(selectedProperty);
+  const selectedProperty = selectedPropertyId
+    ? properties.find((property) => property.id === selectedPropertyId)
+    : undefined;
+  const selectedPhotoCount = selectedProperty
+    ? selectedProperty.photoCount + selectedProperty.photos.length
+    : 0;
+  const topRating =
+    properties.length > 0
+      ? Math.max(...properties.map((property) => getPropertyRating(property)))
+      : null;
+  const selectedPropertyRating = selectedProperty
+    ? getPropertyRating(selectedProperty)
+    : null;
   const propertyFormRating =
     Object.values(propertyForm.criteriaScores).reduce(
       (sum, score) => sum + Number(score),
       0,
     ) / Object.values(propertyForm.criteriaScores).length;
+
+  useEffect(() => {
+    let ignoreLoadedProperties = false;
+
+    async function loadProperties() {
+      try {
+        const supabase = createSupabaseClient();
+        const { data, error } = await supabase
+          .from("properties")
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (error) {
+          throw error;
+        }
+
+        if (!ignoreLoadedProperties) {
+          setProperties((data as PropertyRow[] | null ?? []).map(mapPropertyRow));
+          setPropertiesLoadError("");
+        }
+      } catch (error) {
+        if (!ignoreLoadedProperties) {
+          const message = error instanceof Error ? error.message : "Nieznany błąd";
+          setPropertiesLoadError(`Nie udało się pobrać danych z Supabase: ${message}`);
+        }
+      }
+    }
+
+    loadProperties();
+
+    return () => {
+      ignoreLoadedProperties = true;
+    };
+  }, []);
 
   function selectProperty(propertyId: string) {
     setSelectedPropertyId(propertyId);
@@ -425,84 +744,110 @@ export default function HomePage() {
   function applyFilter(nextFilter: PropertyFilter) {
     setPropertyFilter(nextFilter);
 
-    const nextProperties = filterProperties(nextFilter, searchQuery);
+    const nextProperties = filterProperties(nextFilter);
     if (
-      nextProperties.length > 0 &&
+      selectedPropertyId &&
       !nextProperties.some((property) => property.id === selectedPropertyId)
     ) {
-      setSelectedPropertyId(nextProperties[0].id);
+      setSelectedPropertyId(null);
+      setDetailsOpen(false);
     }
   }
 
-  function applySearch(nextQuery: string) {
-    setSearchQuery(nextQuery);
-
-    const nextProperties = filterProperties(propertyFilter, nextQuery);
-    if (
-      nextProperties.length > 0 &&
-      !nextProperties.some((property) => property.id === selectedPropertyId)
-    ) {
-      setSelectedPropertyId(nextProperties[0].id);
-    }
-  }
-
-  function filterProperties(filter: PropertyFilter, query: string) {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    return properties.filter((property) => {
-      const matchesType = filter === "all" || property.type === filter;
-      const matchesQuery =
-        normalizedQuery.length === 0 ||
-        [
-          property.title,
-          property.location,
-          property.status,
-          property.price,
-          property.type === "land" ? "ziemia działka grunt" : "dom house",
-          property.criteria.map((criterion) => criterion.label).join(" "),
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(normalizedQuery);
-
-      return matchesType && matchesQuery;
-    });
-  }
-
-  function handleMapPointerDown(event: PointerEvent<HTMLDivElement>) {
-    const target = event.target as HTMLElement;
-    if (target.closest("button, input")) {
-      return;
-    }
-
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setPanStart({
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-      mapX: mapOffset.x,
-      mapY: mapOffset.y,
-    });
-  }
-
-  function handleMapPointerMove(event: PointerEvent<HTMLDivElement>) {
-    if (!panStart) {
-      return;
-    }
-
-    setMapOffset({
-      x: panStart.mapX + event.clientX - panStart.pointerX,
-      y: panStart.mapY + event.clientY - panStart.pointerY,
-    });
-  }
-
-  function stopMapPan() {
-    setPanStart(null);
+  function filterProperties(filter: PropertyFilter) {
+    return properties.filter(
+      (property) => filter === "all" || property.type === filter,
+    );
   }
 
   function resetMapPosition() {
-    setMapOffset({ x: 0, y: 0 });
-    setPanStart(null);
+    setMapResetToken((token) => token + 1);
   }
+
+  const updateCurrentLocation = useCallback(() => {
+    if (!("geolocation" in navigator)) {
+      setLocationStatus("unsupported");
+      return;
+    }
+
+    setLocationStatus("loading");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+        setLocationStatus("ready");
+      },
+      (error) => {
+        setLocationStatus(error.code === error.PERMISSION_DENIED ? "denied" : "error");
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 60_000,
+        timeout: 12_000,
+      },
+    );
+  }, []);
+
+  function requestCurrentLocation() {
+    updateCurrentLocation();
+  }
+
+  useEffect(() => {
+    if (!("geolocation" in navigator)) {
+      queueMicrotask(() => {
+        setLocationStatus("unsupported");
+      });
+      return;
+    }
+
+    if (!("permissions" in navigator)) {
+      queueMicrotask(() => {
+        updateCurrentLocation();
+      });
+      return;
+    }
+
+    let ignorePermissionChange = false;
+    let permissionStatus: PermissionStatus | null = null;
+
+    navigator.permissions
+      .query({ name: "geolocation" })
+      .then((status) => {
+        if (ignorePermissionChange) {
+          return;
+        }
+
+        permissionStatus = status;
+
+        if (status.state === "granted") {
+          updateCurrentLocation();
+        } else if (status.state === "denied") {
+          setLocationStatus("denied");
+        }
+
+        status.onchange = () => {
+          if (status.state === "granted") {
+            updateCurrentLocation();
+          } else if (status.state === "denied") {
+            setLocationStatus("denied");
+          } else {
+            setLocationStatus("idle");
+          }
+        };
+      })
+      .catch(() => {
+        updateCurrentLocation();
+      });
+
+    return () => {
+      ignorePermissionChange = true;
+      if (permissionStatus) {
+        permissionStatus.onchange = null;
+      }
+    };
+  }, [updateCurrentLocation]);
 
   function openAddProperty() {
     setPropertyForm(createInitialPropertyForm());
@@ -590,7 +935,7 @@ export default function HomePage() {
     );
   }
 
-  function handleAddProperty(event: FormEvent<HTMLFormElement>) {
+  async function handleAddProperty(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const title = propertyForm.title.trim();
@@ -621,13 +966,9 @@ export default function HomePage() {
     }
 
     const nextIndex = properties.length + 1;
-    const newProperty: Property = {
-      id:
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `property-${Date.now()}`,
+    const propertyInsert: PropertyInsert = {
       title,
-      type: propertyForm.type,
+      property_type: propertyForm.type,
       location,
       price,
       area,
@@ -635,8 +976,8 @@ export default function HomePage() {
       description:
         description ||
         "Nowa nieruchomość dodana ręcznie. Uzupełnij notatki, zdjęcia i kryteria w kolejnym kroku.",
-      noteCount: 0,
-      photoCount: 0,
+      note_count: 0,
+      photo_count: 0,
       photos: propertyForm.photos,
       criteria,
       coordinates: createCoordinatesForIndex(nextIndex),
@@ -644,11 +985,30 @@ export default function HomePage() {
       y: 30 + ((nextIndex * 17) % 42),
     };
 
-    setProperties((currentProperties) => [...currentProperties, newProperty]);
-    setSelectedPropertyId(newProperty.id);
+    try {
+      const supabase = createSupabaseClient();
+      const { data, error } = await supabase
+        .from("properties")
+        .insert(propertyInsert)
+        .select("*")
+        .single();
+
+      if (error || !data) {
+        throw new Error(error?.message ?? "brak danych zwrotnych");
+      }
+
+      const newProperty = mapPropertyRow(data as PropertyRow);
+
+      setProperties((currentProperties) => [newProperty, ...currentProperties]);
+      setSelectedPropertyId(newProperty.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Nieznany błąd";
+      setPropertyFormError(
+        `Nie udało się zapisać w Supabase: ${message}`,
+      );
+      return;
+    }
     setPropertyFilter("all");
-    setSearchQuery("");
-    setMobileSearchOpen(false);
     setPropertyForm(createInitialPropertyForm());
     setPropertyFormError("");
     setAddPropertyOpen(false);
@@ -657,64 +1017,13 @@ export default function HomePage() {
   return (
     <main className="min-h-screen overflow-hidden bg-[var(--color-canvas)] text-[var(--color-ink)]">
       <section className="relative min-h-screen">
-        {hasGoogleMapsConfig ? (
-          <div className="google-map-shell" aria-label="Mapa Google z nieruchomościami">
-            <APIProvider apiKey={googleMapsApiKey}>
-              <Map
-                defaultCenter={defaultMapCenter}
-                defaultZoom={10}
-                disableDefaultUI={false}
-                fullscreenControl={false}
-                gestureHandling="greedy"
-                mapId={googleMapsMapId}
-                mapTypeControl={false}
-                streetViewControl={false}
-                style={{ height: "100%", width: "100%" }}
-              >
-                {filteredProperties.map((property) => (
-                  <GooglePropertyMarker
-                    key={property.id}
-                    property={property}
-                    onSelect={selectProperty}
-                    selected={property.id === selectedPropertyId}
-                  />
-                ))}
-              </Map>
-            </APIProvider>
-          </div>
-        ) : (
-          <div
-            className="map-surface"
-            data-panning={panStart !== null}
-            aria-label="Mapa nieruchomości projektu Dom dla rodziny"
-            onPointerDown={handleMapPointerDown}
-            onPointerMove={handleMapPointerMove}
-            onPointerUp={stopMapPan}
-            onPointerCancel={stopMapPan}
-            onPointerLeave={stopMapPan}
-          >
-            <div
-              className="map-content"
-              data-map-content="true"
-              style={{ transform: `translate3d(${mapOffset.x}px, ${mapOffset.y}px, 0)` }}
-            >
-              <div className="map-grid" />
-              <div className="map-region map-region--north">Katowice</div>
-              <div className="map-region map-region--west">Mikołów</div>
-              <div className="map-region map-region--south">Żory</div>
-              <div className="map-route map-route--one" />
-              <div className="map-route map-route--two" />
-              {filteredProperties.map((property) => (
-                <PropertyMarker
-                  key={property.id}
-                  property={property}
-                  onSelect={selectProperty}
-                  selected={property.id === selectedPropertyId}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+        <OpenFreePropertyMap
+          properties={filteredProperties}
+          selectedPropertyId={selectedPropertyId}
+          userLocation={userLocation}
+          onSelect={selectProperty}
+          resetToken={mapResetToken}
+        />
 
         <header className="pointer-events-none absolute inset-x-0 top-0 z-20 px-4 pt-4 sm:px-6 lg:px-8">
           <div className="pointer-events-auto mx-auto flex max-w-7xl items-center justify-between gap-3 rounded-[28px] border border-black/10 bg-white/88 px-3 py-3 shadow-[0_18px_70px_rgba(29,38,35,0.12)] backdrop-blur-xl">
@@ -730,23 +1039,6 @@ export default function HomePage() {
                   Myszogród 🐭
                 </h1>
               </div>
-            </div>
-
-            <div className="hidden min-w-0 flex-1 items-center justify-center md:flex">
-              <label className="relative w-full max-w-md">
-                <Search
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-[var(--color-muted)]"
-                />
-                <span className="sr-only">Szukaj lokalizacji albo nieruchomości</span>
-                <input
-                  className="h-11 w-full rounded-2xl border border-black/10 bg-white/75 pl-11 pr-4 text-sm outline-none transition focus:border-[var(--color-accent)] focus:ring-4 focus:ring-[var(--color-accent-soft)]"
-                  placeholder="Szukaj lokalizacji albo nieruchomości"
-                  type="search"
-                  value={searchQuery}
-                  onChange={(event) => applySearch(event.target.value)}
-                />
-              </label>
             </div>
 
             <div className="flex items-center gap-2">
@@ -789,7 +1081,7 @@ export default function HomePage() {
               <div className="mt-5 grid grid-cols-3 gap-2">
                 <div className="metric-tile">
                   <span>Top</span>
-                  <strong>{getPropertyRating(topProperty).toFixed(1)}</strong>
+                  <strong>{topRating === null ? "—" : topRating.toFixed(1)}</strong>
                 </div>
                 <div className="metric-tile">
                   <span>DOM</span>
@@ -837,6 +1129,11 @@ export default function HomePage() {
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              {propertiesLoadError ? (
+                <p className="form-error" role="alert">
+                  {propertiesLoadError}
+                </p>
+              ) : null}
               {filteredProperties.map((property) => (
                 <button
                   className="property-card"
@@ -870,15 +1167,137 @@ export default function HomePage() {
               ))}
               {filteredProperties.length === 0 ? (
                 <div className="empty-state">
-                  <Search aria-hidden="true" className="size-5" />
-                  <p>Brak nieruchomości dla tych filtrów.</p>
+                  <MapPin aria-hidden="true" className="size-5" />
+                  <p>Brak nieruchomości. Dodaj pierwszą pozycję ręcznie.</p>
+                  <button
+                    className="secondary-button justify-center"
+                    onClick={openAddProperty}
+                    type="button"
+                  >
+                    <Plus aria-hidden="true" className="size-4" />
+                    Dodaj
+                  </button>
                 </div>
               ) : null}
             </div>
           </div>
         </aside>
 
-        <div className="pointer-events-none absolute bottom-5 right-5 z-20 hidden flex-col gap-2 sm:flex">
+        {selectedProperty && selectedPropertyRating !== null ? (
+          <aside className="pointer-events-none absolute bottom-0 left-0 top-0 z-20 hidden w-[410px] px-6 pb-6 pt-28 lg:block">
+            <div className="sidebar-detail-panel pointer-events-auto">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--color-muted)]">
+                    Szczegóły lokalizacji
+                  </p>
+                  <h2 className="mt-2 text-2xl font-semibold">
+                    {selectedProperty.title}
+                  </h2>
+                  <p className="mt-1 text-sm text-[var(--color-muted)]">
+                    {selectedProperty.location}
+                  </p>
+                </div>
+                <button
+                  className="icon-button"
+                  aria-label="Wróć do listy nieruchomości"
+                  onClick={() => setSelectedPropertyId(null)}
+                  type="button"
+                >
+                  <X aria-hidden="true" className="size-4" />
+                </button>
+              </div>
+
+              <div className="mt-5 details-photo sidebar-detail-photo">
+                {selectedProperty.photos[0] ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={selectedProperty.photos[0].url}
+                    alt={`Główne zdjęcie: ${selectedProperty.photos[0].name}`}
+                  />
+                ) : (
+                  <TypeIcon type={selectedProperty.type} className="size-10" />
+                )}
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="metric-tile">
+                  <span>Średnia</span>
+                  <strong>{selectedPropertyRating.toFixed(1)}</strong>
+                </div>
+                <div className="metric-tile">
+                  <span>Status</span>
+                  <strong>{selectedProperty.status}</strong>
+                </div>
+                <div className="metric-tile">
+                  <span>Cena</span>
+                  <strong>{selectedProperty.price}</strong>
+                </div>
+                <div className="metric-tile">
+                  <span>Powierzchnia</span>
+                  <strong>{selectedProperty.area}</strong>
+                </div>
+              </div>
+
+              <p className="mt-5 text-sm leading-6 text-[var(--color-muted)]">
+                {selectedProperty.description}
+              </p>
+
+              <div className="mt-6">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold">Kryteria oceny</h3>
+                  <RatingPill rating={selectedPropertyRating} />
+                </div>
+                <div className="mt-3 space-y-3">
+                  {selectedProperty.criteria.map((criterion) => (
+                    <div className="criterion-row" key={criterion.label}>
+                      <span>{criterion.label}</span>
+                      <div className="criterion-bar" aria-hidden="true">
+                        <span style={{ width: `${criterion.score * 10}%` }} />
+                      </div>
+                      <strong>{criterion.score}/10</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-6 grid grid-cols-2 gap-2">
+                <label className="secondary-button justify-center">
+                  <Camera aria-hidden="true" className="size-4" />
+                  Zdjęcia
+                  <input
+                    accept="image/*"
+                    multiple
+                    onChange={addPhotosToSelectedProperty}
+                    type="file"
+                  />
+                </label>
+                <button className="primary-button justify-center" type="button">
+                  <ExternalLink aria-hidden="true" className="size-4" />
+                  Link
+                </button>
+              </div>
+            </div>
+          </aside>
+        ) : null}
+
+        <div className="map-action-stack">
+          <div
+            className="location-chip"
+            data-state={locationStatus}
+            role="status"
+          >
+            {getLocationStatusText(locationStatus)}
+          </div>
+          <button
+            className="location-button"
+            aria-label="Pokaż moją lokalizację i promień 2 kilometry"
+            disabled={locationStatus === "loading"}
+            onClick={requestCurrentLocation}
+          type="button"
+        >
+            <LocateFixed aria-hidden="true" className="size-5" />
+          </button>
           <button
             className="icon-button pointer-events-auto"
             aria-label="Wyśrodkuj mapę"
@@ -887,100 +1306,9 @@ export default function HomePage() {
           >
             <Compass aria-hidden="true" className="size-4" />
           </button>
-          <button className="icon-button pointer-events-auto" aria-label="Pełny ekran mapy">
-            <Maximize2 aria-hidden="true" className="size-4" />
-          </button>
         </div>
 
-        <section className="mobile-sheet">
-          <div className="mx-auto mb-3 h-1 w-12 rounded-full bg-black/20" />
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-[var(--color-muted)]">
-                Wybrana nieruchomość
-              </p>
-              <h2 className="mt-1 truncate text-xl font-semibold">{selectedProperty.title}</h2>
-              <p className="mt-1 text-sm text-[var(--color-muted)]">
-                {selectedProperty.location}
-              </p>
-            </div>
-            <RatingPill rating={selectedPropertyRating} />
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            <div className="metric-tile">
-              <span>Cena</span>
-              <strong>{selectedProperty.price}</strong>
-            </div>
-            <div className="metric-tile">
-              <span>Area</span>
-              <strong>{selectedProperty.area}</strong>
-            </div>
-            <div className="metric-tile">
-              <span>Status</span>
-              <strong>{selectedProperty.status}</strong>
-            </div>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <button
-              className="secondary-button flex-1"
-              aria-label={`${selectedPhotoCount} zdjęć`}
-            >
-              <Camera aria-hidden="true" className="size-4" />
-              {selectedPhotoCount}
-            </button>
-            <button
-              className="secondary-button flex-1"
-              aria-label={`${selectedProperty.noteCount} notatek`}
-            >
-              <MessageSquareText aria-hidden="true" className="size-4" />
-              {selectedProperty.noteCount}
-            </button>
-            <button
-              className="primary-button flex-1 justify-center"
-              onClick={() => setDetailsOpen(true)}
-              type="button"
-            >
-              Szczegóły
-              <ChevronDown aria-hidden="true" className="size-4 rotate-[-90deg]" />
-            </button>
-          </div>
-        </section>
-
-        <div className="absolute left-4 top-28 z-20 flex gap-2 md:hidden">
-          <button
-            className="icon-button"
-            aria-label="Szukaj"
-            onClick={() => setMobileSearchOpen((isOpen) => !isOpen)}
-            type="button"
-          >
-            <Search aria-hidden="true" className="size-4" />
-          </button>
-          <button className="icon-button" aria-label="Członkowie projektu">
-            <Users aria-hidden="true" className="size-4" />
-          </button>
-        </div>
-
-        {mobileSearchOpen ? (
-          <div className="mobile-search">
-            <label className="relative block">
-              <Search
-                aria-hidden="true"
-                className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-[var(--color-muted)]"
-              />
-              <span className="sr-only">Szukaj lokalizacji albo nieruchomości</span>
-              <input
-                className="h-12 w-full rounded-2xl border border-black/10 bg-white pl-11 pr-4 text-sm outline-none transition focus:border-[var(--color-accent)] focus:ring-4 focus:ring-[var(--color-accent-soft)]"
-                placeholder="Szukaj lokalizacji albo nieruchomości"
-                type="search"
-                value={searchQuery}
-                onChange={(event) => applySearch(event.target.value)}
-                autoFocus
-              />
-            </label>
-          </div>
-        ) : null}
-
-        {detailsOpen ? (
+        {detailsOpen && selectedProperty && selectedPropertyRating !== null ? (
           <div className="details-backdrop" role="presentation">
             <section className="details-panel" aria-labelledby="property-details-title">
               <div className="flex items-start justify-between gap-4">
@@ -1311,7 +1639,7 @@ export default function HomePage() {
 
                 <p className="form-help">
                   Pozycja na mapie jest na razie ustawiana automatycznie w tej demo-warstwie.
-                  Przy Google Maps wybierzemy punkt kliknięciem na mapie.
+                  Przy OpenFreeMap wybierzemy punkt kliknięciem na mapie.
                 </p>
 
                 {propertyFormError ? (

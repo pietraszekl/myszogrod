@@ -9,7 +9,7 @@ This document records implementation decisions that support `MASTER_PROMPT.md`.
 - Property marker color represents rating.
 - Property data is entered manually by users.
 - Supabase Auth, PostgreSQL, Storage, and RLS are the backend foundation.
-- Google Maps JavaScript API is the target map implementation.
+- OpenFreeMap with MapLibre GL JS is the target map implementation.
 
 ## Phase 0 Decision
 
@@ -17,10 +17,10 @@ The first screen is a local application shell, not a production data layer. Demo
 
 ## Phase 1 Integration
 
-- Supabase clients live in `src/lib/supabase/` and support the browser-safe anon/publishable key.
-- Google Maps is loaded through `@vis.gl/react-google-maps` when `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` and `NEXT_PUBLIC_GOOGLE_MAP_ID` are present.
-- The local demo map remains as a fallback so development and builds work without external credentials.
-- Demo properties now include latitude/longitude coordinates; `x/y` positions only support the fallback map.
+- Supabase clients live in `src/lib/supabase/` and use the browser-safe publishable key, with anon key support kept only as a fallback.
+- OpenFreeMap is loaded through `maplibre-gl` using the public `https://tiles.openfreemap.org/styles/liberty` style.
+- No map API key or billing account is required for the current map provider.
+- Demo properties now include latitude/longitude coordinates used directly by MapLibre markers.
 
 ## Planned Frontend Structure
 

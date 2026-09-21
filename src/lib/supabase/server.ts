@@ -4,10 +4,10 @@ import { cookies } from "next/headers";
 import { assertSupabaseBrowserEnv } from "./env";
 
 export async function createClient() {
-  const { supabaseUrl, supabaseAnonKey } = assertSupabaseBrowserEnv();
+  const { supabaseUrl, supabasePublishableKey } = assertSupabaseBrowserEnv();
   const cookieStore = await cookies();
 
-  return createServerClient(supabaseUrl, supabaseAnonKey, {
+  return createServerClient(supabaseUrl, supabasePublishableKey, {
     cookies: {
       getAll() {
         return cookieStore.getAll();
