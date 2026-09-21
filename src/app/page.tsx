@@ -1698,6 +1698,8 @@ export default function HomePage() {
     setProjects([]);
     setActiveProjectId(null);
     setProperties([]);
+    setFiltersOpen(false);
+    setSettingsOpen(false);
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -2341,17 +2343,21 @@ export default function HomePage() {
                   <LogIn aria-hidden="true" className="size-4" />
                 </button>
               )}
-              <button
-                className="icon-button"
-                aria-label="Ustawienia projektu"
-                onClick={() => setSettingsOpen(true)}
-                type="button"
-              >
-                <Settings aria-hidden="true" className="size-4" />
-              </button>
-              <button className="icon-button" aria-label="Filtry mapy">
-                <SlidersHorizontal aria-hidden="true" className="size-4" />
-              </button>
+              {currentUser ? (
+                <>
+                  <button
+                    className="icon-button"
+                    aria-label="Ustawienia projektu"
+                    onClick={() => setSettingsOpen(true)}
+                    type="button"
+                  >
+                    <Settings aria-hidden="true" className="size-4" />
+                  </button>
+                  <button className="icon-button" aria-label="Filtry mapy">
+                    <SlidersHorizontal aria-hidden="true" className="size-4" />
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
         </header>
@@ -2383,14 +2389,16 @@ export default function HomePage() {
                       <LogIn aria-hidden="true" className="size-4" />
                     </button>
                   )}
-                  <button
-                    className="icon-button"
-                    aria-label="Ustawienia projektu"
-                    onClick={() => setSettingsOpen(true)}
-                    type="button"
-                  >
-                    <Settings aria-hidden="true" className="size-4" />
-                  </button>
+                  {currentUser ? (
+                    <button
+                      className="icon-button"
+                      aria-label="Ustawienia projektu"
+                      onClick={() => setSettingsOpen(true)}
+                      type="button"
+                    >
+                      <Settings aria-hidden="true" className="size-4" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
 
@@ -2406,17 +2414,19 @@ export default function HomePage() {
                     {currentUser?.email ?? "Nie zalogowano"}
                   </p>
                 </div>
-                <button
-                  className="icon-button shrink-0"
-                  aria-label="Filtry listy"
-                  aria-pressed={filtersOpen}
-                  onClick={() => setFiltersOpen((isOpen) => !isOpen)}
-                  type="button"
-                >
-                  <SlidersHorizontal aria-hidden="true" className="size-4" />
-                </button>
+                {currentUser ? (
+                  <button
+                    className="icon-button shrink-0"
+                    aria-label="Filtry listy"
+                    aria-pressed={filtersOpen}
+                    onClick={() => setFiltersOpen((isOpen) => !isOpen)}
+                    type="button"
+                  >
+                    <SlidersHorizontal aria-hidden="true" className="size-4" />
+                  </button>
+                ) : null}
               </div>
-              {filtersOpen ? (
+              {currentUser && filtersOpen ? (
                 <div className="list-filter-panel" aria-label="Filtry listy">
                   <div className="filter-group">
                     <span>Typ</span>
