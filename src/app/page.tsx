@@ -22,11 +22,10 @@ import {
   setWorkerUrl,
 } from "maplibre-gl";
 import {
-  Bell,
   Camera,
+  Check,
   ChevronLeft,
   ChevronRight,
-  FolderPlus,
   Home,
   Info,
   KeyRound,
@@ -75,12 +74,6 @@ type Project = {
   id: string;
   name: string;
   ownerId: string;
-};
-
-type ProjectMember = {
-  projectId: string;
-  userId: string;
-  role: "owner" | "admin" | "member";
 };
 
 type ProjectInvitation = {
@@ -148,12 +141,6 @@ type ProjectRow = {
   id: string;
   name: string;
   owner_id: string;
-};
-
-type ProjectMemberRow = {
-  project_id: string;
-  user_id: string;
-  role: ProjectMember["role"];
 };
 
 type ProjectInvitationRow = {
@@ -633,14 +620,6 @@ function mapProjectRow(row: ProjectRow): Project {
   };
 }
 
-function mapProjectMemberRow(row: ProjectMemberRow): ProjectMember {
-  return {
-    projectId: row.project_id,
-    userId: row.user_id,
-    role: row.role,
-  };
-}
-
 function mapProjectInvitationRow(row: ProjectInvitationRow): ProjectInvitation {
   return {
     id: row.id,
@@ -768,12 +747,14 @@ function OpenFreePropertyMap({
   properties,
   selectedPropertyId,
   userLocation,
+  userLocationFocusRequest,
   onSelect,
   onLongPress,
 }: {
   properties: Property[];
   selectedPropertyId: string | null;
   userLocation: Coordinates | null;
+  userLocationFocusRequest: number;
   onSelect: (propertyId: string) => void;
   onLongPress: (coordinates: Coordinates) => void;
 }) {
@@ -781,6 +762,7 @@ function OpenFreePropertyMap({
   const mapRef = useRef<MapLibreMap | null>(null);
   const markersRef = useRef<MapMarkerInstance[]>([]);
   const hasCenteredUserLocationRef = useRef(false);
+  const handledUserLocationFocusRequestRef = useRef(0);
   const onLongPressRef = useRef(onLongPress);
   const [mapStatus, setMapStatus] = useState<"loading" | "ready" | "error">("loading");
 
@@ -1101,15 +1083,19 @@ function OpenFreePropertyMap({
       return;
     }
 
-    if (!hasCenteredUserLocationRef.current) {
+    const shouldFocusRequestedLocation =
+      userLocationFocusRequest > handledUserLocationFocusRequestRef.current;
+
+    if (!hasCenteredUserLocationRef.current || shouldFocusRequestedLocation) {
       hasCenteredUserLocationRef.current = true;
+      handledUserLocationFocusRequestRef.current = userLocationFocusRequest;
       map.fitBounds(getRadiusBounds(userLocation, userLocationRadiusKm), {
         duration: 700,
         maxZoom: 11.8,
         padding: getUserLocationViewportPadding(),
       });
     }
-  }, [mapStatus, userLocation]);
+  }, [mapStatus, userLocation, userLocationFocusRequest]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1299,12 +1285,11 @@ export default function HomePage() {
   const [passwordRecoveryOpen, setPasswordRecoveryOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
-  const [projectName, setProjectName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteInstructions, setInviteInstructions] = useState("");
   const [settingsError, setSettingsError] = useState("");
+  const [accountActionBusy, setAccountActionBusy] = useState(false);
   const [propertyForm, setPropertyForm] = useState<PropertyFormState>(
     createInitialPropertyForm(),
   );
@@ -1324,11 +1309,16 @@ export default function HomePage() {
   const [manualPropertyCoordinates, setManualPropertyCoordinates] =
     useState<Coordinates | null>(null);
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const [userLocationFocusRequest, setUserLocationFocusRequest] = useState(0);
   const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
   const filtersActive =
     propertyTypeFilter !== "all" ||
     propertyStatusFilter !== "all" ||
     minimumRatingFilter > 0;
+  const addressVerified =
+    addressLookup.status === "found" &&
+    !manualPropertyCoordinates &&
+    addressLookup.query === propertyForm.location.trim();
   const filteredProperties = properties.filter((property) => {
     if (propertyTypeFilter !== "all" && property.type !== propertyTypeFilter) {
       return false;
@@ -1453,7 +1443,6 @@ export default function HomePage() {
       if (!currentUser) {
         setProjects([]);
         setActiveProjectId(null);
-        setProjectMembers([]);
         setProjectInvitations([]);
         setProperties([]);
         return;
@@ -1514,7 +1503,7 @@ export default function HomePage() {
     async function loadProperties() {
       if (!currentUser || !activeProjectId) {
         setProperties([]);
-        setPropertiesLoadError(currentUser ? "" : "Zaloguj się, aby zobaczyć projekty.");
+        setPropertiesLoadError("");
         return;
       }
 
@@ -1620,31 +1609,17 @@ export default function HomePage() {
 
       try {
         const supabase = createSupabaseClient();
-        const [membersResult, invitationsResult] = await Promise.all([
-          supabase
-            .from("project_members")
-            .select("*")
-            .eq("project_id", activeProjectId)
-            .order("created_at", { ascending: true }),
-          supabase
-            .from("project_invitations")
-            .select("*")
-            .eq("project_id", activeProjectId)
-            .order("created_at", { ascending: false }),
-        ]);
-
-        if (membersResult.error) {
-          throw membersResult.error;
-        }
+        const invitationsResult = await supabase
+          .from("project_invitations")
+          .select("*")
+          .eq("project_id", activeProjectId)
+          .order("created_at", { ascending: false });
 
         if (invitationsResult.error) {
           throw invitationsResult.error;
         }
 
         if (!ignoreSettings) {
-          setProjectMembers(
-            (membersResult.data as ProjectMemberRow[] | null ?? []).map(mapProjectMemberRow),
-          );
           setProjectInvitations(
             (invitationsResult.data as ProjectInvitationRow[] | null ?? []).map(
               mapProjectInvitationRow,
@@ -1700,6 +1675,7 @@ export default function HomePage() {
   }, []);
 
   function requestCurrentLocation() {
+    setUserLocationFocusRequest((requestId) => requestId + 1);
     updateCurrentLocation();
   }
 
@@ -1834,34 +1810,6 @@ export default function HomePage() {
     setInviteInstructions("");
   }
 
-  async function createProject(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const name = projectName.trim();
-    if (!currentUser || !name) {
-      setSettingsError("Zaloguj się i podaj nazwę projektu.");
-      return;
-    }
-
-    try {
-      const supabase = createSupabaseClient();
-      const { data, error } = await supabase
-        .rpc("create_project", { project_name: name });
-
-      if (error || !data) {
-        throw new Error(error?.message ?? "brak danych zwrotnych");
-      }
-
-      const newProject = mapProjectRow(data as ProjectRow);
-      setProjects((currentProjects) => [...currentProjects, newProject]);
-      setActiveProjectId(newProject.id);
-      setProjectName("");
-      setSettingsError("");
-    } catch (error) {
-      setSettingsError(`Nie udało się utworzyć projektu: ${getErrorMessage(error)}`);
-    }
-  }
-
   async function inviteCollaborator(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1931,6 +1879,48 @@ export default function HomePage() {
     }
   }
 
+  async function deleteOwnAccount() {
+    if (!currentUser) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Usunąć Twoje konto? Tej operacji nie da się cofnąć. Jeśli jesteś właścicielem przestrzeni, powiązane dane mogą zostać usunięte.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setAccountActionBusy(true);
+    setSettingsError("");
+
+    try {
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+      });
+      const result = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(result?.error ?? "Nie udało się usunąć konta.");
+      }
+
+      const supabase = createSupabaseClient();
+      await supabase.auth.signOut();
+      setCurrentUser(null);
+      setProjects([]);
+      setActiveProjectId(null);
+      setProperties([]);
+      setProjectInvitations([]);
+      setInviteInstructions("");
+      setSettingsOpen(false);
+    } catch (error) {
+      setSettingsError(`Nie udało się usunąć konta: ${getErrorMessage(error)}`);
+    } finally {
+      setAccountActionBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (!("geolocation" in navigator)) {
       queueMicrotask(() => {
@@ -1941,7 +1931,9 @@ export default function HomePage() {
 
     if (!("permissions" in navigator)) {
       queueMicrotask(() => {
-        updateCurrentLocation();
+        setLocationStatus((currentStatus) =>
+          currentStatus === "unsupported" ? currentStatus : "idle",
+        );
       });
       return;
     }
@@ -1962,6 +1954,8 @@ export default function HomePage() {
           updateCurrentLocation();
         } else if (status.state === "denied") {
           setLocationStatus("denied");
+        } else {
+          setLocationStatus("idle");
         }
 
         status.onchange = () => {
@@ -1975,7 +1969,9 @@ export default function HomePage() {
         };
       })
       .catch(() => {
-        updateCurrentLocation();
+        setLocationStatus((currentStatus) =>
+          currentStatus === "unsupported" ? currentStatus : "idle",
+        );
       });
 
     return () => {
@@ -2461,6 +2457,93 @@ export default function HomePage() {
     }
   }
 
+  function renderFilterPanel(label: string) {
+    if (!currentUser || !filtersOpen) {
+      return null;
+    }
+
+    return (
+      <div className="list-filter-panel" aria-label={label}>
+        <div className="filter-group">
+          <span>Typ</span>
+          <div className="filter-chip-row">
+            <button
+              className="filter-chip"
+              data-active={propertyTypeFilter === "all"}
+              onClick={() => setPropertyTypeFilter("all")}
+              type="button"
+            >
+              Wszystkie
+            </button>
+            <button
+              className="filter-chip"
+              data-active={propertyTypeFilter === "land"}
+              onClick={() => setPropertyTypeFilter("land")}
+              type="button"
+            >
+              Działki
+            </button>
+            <button
+              className="filter-chip"
+              data-active={propertyTypeFilter === "house"}
+              onClick={() => setPropertyTypeFilter("house")}
+              type="button"
+            >
+              Domy
+            </button>
+          </div>
+        </div>
+
+        <label className="filter-field">
+          <span>Status</span>
+          <select
+            value={propertyStatusFilter}
+            onChange={(event) =>
+              setPropertyStatusFilter(event.target.value as PropertyStatusFilter)
+            }
+          >
+            <option value="all">Wszystkie statusy</option>
+            {propertyStatuses.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="filter-field">
+          <span>Ocena od</span>
+          <select
+            value={minimumRatingFilter}
+            onChange={(event) => setMinimumRatingFilter(Number(event.target.value))}
+          >
+            {ratingFilterOptions.map((rating) => (
+              <option key={rating} value={rating}>
+                {rating === 0 ? "Dowolna" : `${rating}+`}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {filtersActive ? (
+          <div className="filter-summary">
+            <button
+              className="filter-reset"
+              onClick={() => {
+                setPropertyTypeFilter("all");
+                setPropertyStatusFilter("all");
+                setMinimumRatingFilter(0);
+              }}
+              type="button"
+            >
+              Wyczyść
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <main className="app-map-root overflow-hidden bg-[var(--color-canvas)] text-[var(--color-ink)]">
       <section className="app-map-stage relative">
@@ -2468,6 +2551,7 @@ export default function HomePage() {
           properties={filteredProperties}
           selectedPropertyId={selectedPropertyId}
           userLocation={userLocation}
+          userLocationFocusRequest={userLocationFocusRequest}
           onSelect={selectProperty}
           onLongPress={openAddProperty}
         />
@@ -2477,20 +2561,7 @@ export default function HomePage() {
             <AppBrand />
 
             <div className="flex items-center gap-2">
-              <button className="icon-button hidden sm:inline-flex" aria-label="Powiadomienia">
-                <Bell aria-hidden="true" className="size-4" />
-              </button>
-              {currentUser ? (
-                <button
-                  className="icon-button"
-                  aria-label="Wyloguj się"
-                  onClick={signOut}
-                  title="Wyloguj się"
-                  type="button"
-                >
-                  <LogOut aria-hidden="true" className="size-4" />
-                </button>
-              ) : (
+              {!currentUser ? (
                 <button
                   className="icon-button"
                   aria-label="Zaloguj się"
@@ -2500,7 +2571,7 @@ export default function HomePage() {
                 >
                   <LogIn aria-hidden="true" className="size-4" />
                 </button>
-              )}
+              ) : null}
               {currentUser ? (
                 <>
                   <button
@@ -2511,13 +2582,22 @@ export default function HomePage() {
                   >
                     <Settings aria-hidden="true" className="size-4" />
                   </button>
-                  <button className="icon-button" aria-label="Filtry mapy">
+                  <button
+                    className="icon-button"
+                    aria-label="Filtry mapy"
+                    aria-pressed={filtersOpen}
+                    data-active={filtersOpen}
+                    onClick={() => setFiltersOpen((isOpen) => !isOpen)}
+                    title="Filtry mapy"
+                    type="button"
+                  >
                     <SlidersHorizontal aria-hidden="true" className="size-4" />
                   </button>
                 </>
               ) : null}
             </div>
           </div>
+          {renderFilterPanel("Filtry mapy")}
         </header>
 
         <aside className="pointer-events-none absolute bottom-0 left-0 top-0 z-10 hidden w-[410px] p-6 lg:block">
@@ -2529,24 +2609,14 @@ export default function HomePage() {
                   {currentUser ? (
                     <button
                       className="icon-button"
-                      aria-label="Wyloguj się"
-                      onClick={signOut}
-                      title="Wyloguj się"
+                      aria-label="Filtry listy"
+                      aria-pressed={filtersOpen}
+                      onClick={() => setFiltersOpen((isOpen) => !isOpen)}
                       type="button"
                     >
-                      <LogOut aria-hidden="true" className="size-4" />
+                      <SlidersHorizontal aria-hidden="true" className="size-4" />
                     </button>
-                  ) : (
-                    <button
-                      className="icon-button"
-                      aria-label="Zaloguj się"
-                      onClick={() => setSettingsOpen(true)}
-                      title="Zaloguj się"
-                      type="button"
-                    >
-                      <LogIn aria-hidden="true" className="size-4" />
-                    </button>
-                  )}
+                  ) : null}
                   {currentUser ? (
                     <button
                       className="icon-button"
@@ -2560,115 +2630,7 @@ export default function HomePage() {
                 </div>
               </div>
 
-              <div className="mt-6 flex items-end justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-[var(--color-muted)]">
-                    Projekt
-                  </p>
-                  <h2 className="mt-1 text-xl font-semibold">
-                    {activeProject?.name ?? "Brak projektu"}
-                  </h2>
-                  <p className="mt-1 truncate text-xs text-[var(--color-muted)]">
-                    {currentUser?.email ?? "Nie zalogowano"}
-                  </p>
-                </div>
-                {currentUser ? (
-                  <button
-                    className="icon-button shrink-0"
-                    aria-label="Filtry listy"
-                    aria-pressed={filtersOpen}
-                    onClick={() => setFiltersOpen((isOpen) => !isOpen)}
-                    type="button"
-                  >
-                    <SlidersHorizontal aria-hidden="true" className="size-4" />
-                  </button>
-                ) : null}
-              </div>
-              {currentUser && filtersOpen ? (
-                <div className="list-filter-panel" aria-label="Filtry listy">
-                  <div className="filter-group">
-                    <span>Typ</span>
-                    <div className="filter-chip-row">
-                      <button
-                        className="filter-chip"
-                        data-active={propertyTypeFilter === "all"}
-                        onClick={() => setPropertyTypeFilter("all")}
-                        type="button"
-                      >
-                        Wszystkie
-                      </button>
-                      <button
-                        className="filter-chip"
-                        data-active={propertyTypeFilter === "land"}
-                        onClick={() => setPropertyTypeFilter("land")}
-                        type="button"
-                      >
-                        Działki
-                      </button>
-                      <button
-                        className="filter-chip"
-                        data-active={propertyTypeFilter === "house"}
-                        onClick={() => setPropertyTypeFilter("house")}
-                        type="button"
-                      >
-                        Domy
-                      </button>
-                    </div>
-                  </div>
-
-                  <label className="filter-field">
-                    <span>Status</span>
-                    <select
-                      value={propertyStatusFilter}
-                      onChange={(event) =>
-                        setPropertyStatusFilter(event.target.value as PropertyStatusFilter)
-                      }
-                    >
-                      <option value="all">Wszystkie statusy</option>
-                      {propertyStatuses.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="filter-field">
-                    <span>Ocena od</span>
-                    <select
-                      value={minimumRatingFilter}
-                      onChange={(event) =>
-                        setMinimumRatingFilter(Number(event.target.value))
-                      }
-                    >
-                      {ratingFilterOptions.map((rating) => (
-                        <option key={rating} value={rating}>
-                          {rating === 0 ? "Dowolna" : `${rating}+`}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="filter-summary">
-                    <span>
-                      {filteredProperties.length} z {properties.length}
-                    </span>
-                    {filtersActive ? (
-                      <button
-                        className="filter-reset"
-                        onClick={() => {
-                          setPropertyTypeFilter("all");
-                          setPropertyStatusFilter("all");
-                          setMinimumRatingFilter(0);
-                        }}
-                        type="button"
-                      >
-                        Wyczyść
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
+              {renderFilterPanel("Filtry listy")}
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
@@ -2730,7 +2692,16 @@ export default function HomePage() {
                       <Plus aria-hidden="true" className="size-4" />
                       Dodaj
                     </button>
-                  ) : null}
+                  ) : (
+                    <button
+                      className="secondary-button justify-center"
+                      onClick={() => setSettingsOpen(true)}
+                      type="button"
+                    >
+                      <LogIn aria-hidden="true" className="size-4" />
+                      Zaloguj się
+                    </button>
+                  )}
                 </div>
               ) : null}
               {properties.length > 0 && filteredProperties.length === 0 ? (
@@ -2789,10 +2760,6 @@ export default function HomePage() {
 
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <div className="metric-tile">
-                  <span>Średnia</span>
-                  <strong>{selectedPropertyRating.toFixed(1)}</strong>
-                </div>
-                <div className="metric-tile">
                   <span>Status</span>
                   <strong>{selectedProperty.status}</strong>
                 </div>
@@ -2823,7 +2790,6 @@ export default function HomePage() {
               <div className="mt-6">
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="text-sm font-semibold">Kryteria oceny</h3>
-                  <RatingPill rating={selectedPropertyRating} />
                 </div>
                 <div className="mt-3 space-y-3">
                   {selectedProperty.criteria.map((criterion) => (
@@ -2841,6 +2807,10 @@ export default function HomePage() {
                       <strong>{criterion.score}/10</strong>
                     </div>
                   ))}
+                </div>
+                <div className="criterion-average-tile">
+                  <span>Średnia ocena</span>
+                  <RatingPill rating={selectedPropertyRating} />
                 </div>
               </div>
 
@@ -2948,10 +2918,6 @@ export default function HomePage() {
 
               <div className="mt-5 grid grid-cols-2 gap-3">
                 <div className="metric-tile">
-                  <span>Średnia</span>
-                  <strong>{selectedPropertyRating.toFixed(1)}</strong>
-                </div>
-                <div className="metric-tile">
                   <span>Status</span>
                   <strong>{selectedProperty.status}</strong>
                 </div>
@@ -2997,6 +2963,10 @@ export default function HomePage() {
                       <strong>{criterion.score}/10</strong>
                     </div>
                   ))}
+                </div>
+                <div className="criterion-average-tile">
+                  <span>Średnia ocena</span>
+                  <RatingPill rating={selectedPropertyRating} />
                 </div>
               </div>
 
@@ -3215,49 +3185,6 @@ export default function HomePage() {
                 </div>
               ) : (
                 <div className="property-form">
-                  <div className="settings-summary">
-                    <div>
-                      <span>Zalogowano jako</span>
-                      <strong>{currentUser.email}</strong>
-                    </div>
-                    <button className="secondary-button" onClick={signOut} type="button">
-                      <LogOut aria-hidden="true" className="size-4" />
-                      Wyloguj
-                    </button>
-                  </div>
-
-                  <label className="form-field">
-                    <span>Aktywny projekt</span>
-                    <select
-                      value={activeProjectId ?? ""}
-                      onChange={(event) => setActiveProjectId(event.target.value || null)}
-                    >
-                      {projects.length === 0 ? (
-                        <option value="">Brak projektów</option>
-                      ) : null}
-                      {projects.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          {project.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <form className="settings-inline-form" onSubmit={createProject}>
-                    <label className="form-field">
-                      <span>Nowy projekt</span>
-                      <input
-                        value={projectName}
-                        onChange={(event) => setProjectName(event.target.value)}
-                        placeholder="np. Dom pod Katowicami"
-                      />
-                    </label>
-                    <button className="secondary-button justify-center" type="submit">
-                      <FolderPlus aria-hidden="true" className="size-4" />
-                      Utwórz
-                    </button>
-                  </form>
-
                   <form className="settings-inline-form" onSubmit={inviteCollaborator}>
                     <label className="form-field">
                       <span>Zaproszenie</span>
@@ -3292,22 +3219,6 @@ export default function HomePage() {
                   ) : null}
 
                   <div className="settings-list">
-                    <h3>Członkowie</h3>
-                    {projectMembers.length > 0 ? (
-                      projectMembers.map((member) => (
-                        <div className="settings-list-row" key={`${member.projectId}-${member.userId}`}>
-                          <span>{member.userId}</span>
-                          <strong>{member.role}</strong>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-sm text-[var(--color-muted)]">
-                        Brak widocznych członków albo brak uprawnień admina.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="settings-list">
                     <h3>Zaproszenia</h3>
                     {projectInvitations.length > 0 ? (
                       projectInvitations.map((invitation) => (
@@ -3323,11 +3234,40 @@ export default function HomePage() {
                     )}
                   </div>
 
+                  <div className="settings-summary">
+                    <div>
+                      <span>Zalogowano jako</span>
+                      <strong>{currentUser.email}</strong>
+                    </div>
+                    <button className="secondary-button" onClick={signOut} type="button">
+                      <LogOut aria-hidden="true" className="size-4" />
+                      Wyloguj
+                    </button>
+                  </div>
+
                   {settingsError ? (
                     <p className="form-error" role="alert">
                       {settingsError}
                     </p>
                   ) : null}
+
+                  <div className="danger-zone">
+                    <div>
+                      <h3>Danger</h3>
+                      <p>
+                        Tej operacji nie da się cofnąć.
+                      </p>
+                    </div>
+                    <button
+                      className="danger-button justify-center"
+                      disabled={accountActionBusy}
+                      onClick={deleteOwnAccount}
+                      type="button"
+                    >
+                      <Trash2 aria-hidden="true" className="size-4" />
+                      {accountActionBusy ? "Usuwam..." : "Usuń moje konto"}
+                    </button>
+                  </div>
                 </div>
               )}
             </section>
@@ -3408,12 +3348,24 @@ export default function HomePage() {
                       </span>
                     </span>
                   </span>
-                  <input
-                    value={propertyForm.location}
-                    onChange={(event) => updatePropertyForm("location", event.target.value)}
-                    placeholder="np. Legionów Polskich, Dąbrowa Górnicza"
-                    required
-                  />
+                  <span className="address-input-wrap" data-verified={addressVerified}>
+                    <input
+                      value={propertyForm.location}
+                      onChange={(event) => updatePropertyForm("location", event.target.value)}
+                      placeholder="np. Legionów Polskich, Dąbrowa Górnicza"
+                      required
+                    />
+                    {addressVerified ? (
+                      <span
+                        aria-label="Adres odnaleziony na mapie"
+                        className="address-check"
+                        role="img"
+                        title="Adres odnaleziony na mapie"
+                      >
+                        <Check aria-hidden="true" className="size-4" />
+                      </span>
+                    ) : null}
+                  </span>
                   {manualPropertyCoordinates ? (
                     <span className="address-lookup" data-state="pinned">
                       Punkt wskazany na mapie: {formatCoordinates(manualPropertyCoordinates)}
@@ -3421,11 +3373,10 @@ export default function HomePage() {
                   ) : null}
                   {addressLookup.status !== "idle" &&
                   !manualPropertyCoordinates &&
+                  addressLookup.status !== "found" &&
                   addressLookup.query === propertyForm.location.trim() ? (
                     <span className="address-lookup" data-state={addressLookup.status}>
-                      {addressLookup.status === "found"
-                        ? addressLookup.label
-                        : addressLookup.message}
+                      {addressLookup.message}
                     </span>
                   ) : null}
                 </label>
@@ -3433,7 +3384,7 @@ export default function HomePage() {
                 <div className="form-grid">
                   <label className="form-field">
                     <span className="field-label-with-help">
-                      Cena
+                      Cena (tyś)
                       <span className="info-popover">
                         <button
                           aria-describedby="price-help"
@@ -3467,57 +3418,55 @@ export default function HomePage() {
                 </div>
 
                 <label className="form-field">
-                  <span>Link zewnętrzny</span>
-                  <input
-                    value={propertyForm.sourceUrl}
-                    onChange={(event) => updatePropertyForm("sourceUrl", event.target.value)}
-                    placeholder="np. https://www.otodom.pl/..."
-                    type="url"
-                  />
+                  <span>Status</span>
+                  <select
+                    value={propertyForm.status}
+                    onChange={(event) =>
+                      updatePropertyForm("status", event.target.value as PropertyStatus)
+                    }
+                  >
+                    <option>Do obejrzenia</option>
+                    <option>Obiecujące</option>
+                    <option>W trakcie</option>
+                    <option>Odrzucone</option>
+                  </select>
                 </label>
-
-                <div className="form-grid">
-                  <div className="metric-tile">
-                    <span>Średnia ocena</span>
-                    <strong>{propertyFormRating.toFixed(1)}</strong>
-                  </div>
-                  <label className="form-field">
-                    <span>Status</span>
-                    <select
-                      value={propertyForm.status}
-                      onChange={(event) =>
-                        updatePropertyForm("status", event.target.value as PropertyStatus)
-                      }
-                    >
-                      <option>Do obejrzenia</option>
-                      <option>Obiecujące</option>
-                      <option>W trakcie</option>
-                      <option>Odrzucone</option>
-                    </select>
-                  </label>
-                </div>
 
                 <div className="criteria-editor">
                   <div>
                     <h3>Kryteria oceny</h3>
                     <p>Ocena końcowa liczy się automatycznie jako średnia.</p>
                   </div>
-                  {criteriaByType[propertyForm.type].map((criterion) => (
-                    <label className="criterion-input" key={criterion}>
-                      <span>{criterion}</span>
-                      <input
-                        max="10"
-                        min="1"
-                        step="1"
-                        type="range"
-                        value={propertyForm.criteriaScores[criterion] ?? "7"}
-                        onChange={(event) =>
-                          updateCriterionScore(criterion, event.target.value)
-                        }
-                      />
-                      <strong>{propertyForm.criteriaScores[criterion] ?? "7"}/10</strong>
-                    </label>
-                  ))}
+                  {criteriaByType[propertyForm.type].map((criterion) => {
+                    const criterionScore = Number(propertyForm.criteriaScores[criterion] ?? "7");
+
+                    return (
+                      <label
+                        className="criterion-input"
+                        key={criterion}
+                        style={{
+                          "--criterion-color": getCriterionColor(criterionScore),
+                        } as CSSProperties}
+                      >
+                        <span>{criterion}</span>
+                        <input
+                          max="10"
+                          min="1"
+                          step="1"
+                          type="range"
+                          value={propertyForm.criteriaScores[criterion] ?? "7"}
+                          onChange={(event) =>
+                            updateCriterionScore(criterion, event.target.value)
+                          }
+                        />
+                        <strong>{propertyForm.criteriaScores[criterion] ?? "7"}/10</strong>
+                      </label>
+                    );
+                  })}
+                  <div className="criterion-average-tile">
+                    <span>Średnia ocena</span>
+                    <RatingPill rating={propertyFormRating} />
+                  </div>
                 </div>
 
                 <div className="photo-uploader">
@@ -3584,6 +3533,16 @@ export default function HomePage() {
                     }
                     placeholder="Krótka notatka, co warto sprawdzić..."
                     rows={4}
+                  />
+                </label>
+
+                <label className="form-field">
+                  <span>Link zewnętrzny</span>
+                  <input
+                    value={propertyForm.sourceUrl}
+                    onChange={(event) => updatePropertyForm("sourceUrl", event.target.value)}
+                    placeholder="np. https://www.otodom.pl/..."
+                    type="url"
                   />
                 </label>
 

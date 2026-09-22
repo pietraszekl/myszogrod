@@ -510,7 +510,7 @@ input:focus-visible {
   display: flex;
   min-height: 30px;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
   color: var(--color-muted);
   font-size: 12px;
@@ -831,6 +831,24 @@ input:focus-visible {
     );
 }
 
+.criterion-average-tile {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  border-top: 1px solid rgba(23, 33, 29, 0.08);
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 800;
+  padding-top: 14px;
+}
+
+.criterion-average-tile > span {
+  text-transform: uppercase;
+}
+
 .property-form {
   margin-top: 24px;
   display: grid;
@@ -942,6 +960,33 @@ input:focus-visible {
   box-shadow: 0 0 0 4px var(--color-accent-soft);
 }
 
+.address-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.address-input-wrap[data-verified="true"] input {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, white);
+  padding-right: 46px;
+}
+
+.address-check {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  display: inline-flex;
+  height: 24px;
+  width: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--color-accent);
+  color: white;
+  transform: translateY(-50%);
+  box-shadow: 0 6px 14px rgba(61, 123, 98, 0.22);
+  pointer-events: none;
+}
+
 .address-lookup {
   display: block;
   border-radius: 14px;
@@ -950,11 +995,6 @@ input:focus-visible {
   font-size: 12px;
   line-height: 1.45;
   padding: 10px 12px;
-}
-
-.address-lookup[data-state="found"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
 }
 
 .address-lookup[data-state="pinned"] {
@@ -1124,6 +1164,28 @@ input:focus-visible {
   font-weight: 800;
 }
 
+.danger-zone {
+  display: grid;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--rating-low) 24%, white);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--rating-low) 7%, white);
+  padding: 12px;
+}
+
+.danger-zone h3 {
+  color: var(--rating-low);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.danger-zone p {
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .photo-uploader {
   display: grid;
   gap: 12px;
@@ -1199,6 +1261,7 @@ input:focus-visible {
 }
 
 .criterion-input {
+  --criterion-color: var(--color-accent);
   display: grid;
   grid-template-columns: minmax(120px, 1fr) 1.3fr 44px;
   align-items: center;
@@ -1212,11 +1275,11 @@ input:focus-visible {
 }
 
 .criterion-input input {
-  accent-color: var(--color-accent);
+  accent-color: var(--criterion-color);
 }
 
 .criterion-input strong {
-  color: var(--color-ink);
+  color: var(--criterion-color);
   font-size: 12px;
   text-align: right;
 }
@@ -1225,6 +1288,20 @@ input:focus-visible {
   .map-action-stack {
     right: 24px;
     bottom: 24px;
+  }
+}
+
+@media (max-width: 1023px) {
+  header .list-filter-panel {
+    pointer-events: auto;
+    max-height: min(58vh, 430px);
+    overflow-y: auto;
+    margin-inline: auto;
+    max-width: 760px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 18px 44px rgba(23, 33, 29, 0.16);
+    backdrop-filter: blur(18px);
   }
 }
 
