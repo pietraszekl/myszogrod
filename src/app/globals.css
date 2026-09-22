@@ -51,6 +51,16 @@ input:focus-visible {
   outline-offset: 3px;
 }
 
+.app-map-root {
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
+}
+
+.app-map-stage {
+  min-height: inherit;
+}
+
 .map-surface {
   position: absolute;
   inset: 0;
@@ -67,6 +77,9 @@ input:focus-visible {
 .openfree-map-shell {
   position: absolute;
   inset: 0;
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
   background: #dfe6db;
 }
 
@@ -1225,7 +1238,7 @@ input:focus-visible {
 @media (max-width: 640px) {
   .map-action-stack {
     right: 18px;
-    bottom: max(24px, env(safe-area-inset-bottom));
+    bottom: max(104px, calc(env(safe-area-inset-bottom) + 88px));
   }
 
   .location-button {

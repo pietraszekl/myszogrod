@@ -1453,7 +1453,7 @@ export default function HomePage() {
       try {
         const supabase = createSupabaseClient();
         await supabase.rpc("accept_my_project_invitations");
-        const { data, error } = await supabase
+        const { data: loadedProjects, error } = await supabase
           .from("projects")
           .select("*")
           .order("created_at", { ascending: true });
@@ -1462,8 +1462,27 @@ export default function HomePage() {
           throw error;
         }
 
+        let projectRows = loadedProjects as ProjectRow[] | null;
+
+        if ((projectRows ?? []).length === 0) {
+          const { data: createdProject, error: createError } = await supabase
+            .from("projects")
+            .insert({
+              name: "Mój projekt",
+              owner_id: currentUser.id,
+            })
+            .select("*")
+            .single();
+
+          if (createError || !createdProject) {
+            throw new Error(createError?.message ?? "nie udało się utworzyć projektu startowego");
+          }
+
+          projectRows = [createdProject] as ProjectRow[];
+        }
+
         if (!ignoreProjects) {
-          const nextProjects = (data as ProjectRow[] | null ?? []).map(mapProjectRow);
+          const nextProjects = (projectRows ?? []).map(mapProjectRow);
           setProjects(nextProjects);
           setActiveProjectId((currentProjectId) =>
             currentProjectId && nextProjects.some((project) => project.id === currentProjectId)
@@ -2413,8 +2432,8 @@ export default function HomePage() {
   }
 
   return (
-    <main className="min-h-screen overflow-hidden bg-[var(--color-canvas)] text-[var(--color-ink)]">
-      <section className="relative min-h-screen">
+    <main className="app-map-root overflow-hidden bg-[var(--color-canvas)] text-[var(--color-ink)]">
+      <section className="app-map-stage relative">
         <OpenFreePropertyMap
           properties={filteredProperties}
           selectedPropertyId={selectedPropertyId}
