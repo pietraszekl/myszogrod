@@ -1466,13 +1466,7 @@ export default function HomePage() {
 
         if ((projectRows ?? []).length === 0) {
           const { data: createdProject, error: createError } = await supabase
-            .from("projects")
-            .insert({
-              name: "Mój projekt",
-              owner_id: currentUser.id,
-            })
-            .select("*")
-            .single();
+            .rpc("create_project", { project_name: "Mój projekt" });
 
           if (createError || !createdProject) {
             throw new Error(createError?.message ?? "nie udało się utworzyć projektu startowego");
@@ -1842,13 +1836,7 @@ export default function HomePage() {
     try {
       const supabase = createSupabaseClient();
       const { data, error } = await supabase
-        .from("projects")
-        .insert({
-          name,
-          owner_id: currentUser.id,
-        })
-        .select("*")
-        .single();
+        .rpc("create_project", { project_name: name });
 
       if (error || !data) {
         throw new Error(error?.message ?? "brak danych zwrotnych");
