@@ -1274,6 +1274,14 @@ function getAuthRedirectUrl(kind: "default" | "recovery" = "default") {
   return origin;
 }
 
+function createInviteInstructions(email: string, projectName: string, appUrl: string) {
+  return [
+    `Zapraszam Cię do projektu "${projectName}" w Myszogrodzie.`,
+    `Wejdź na ${appUrl} i zarejestruj albo zaloguj się adresem ${email}.`,
+    "Po zalogowaniu dostęp do projektu zostanie nadany automatycznie.",
+  ].join("\n");
+}
+
 export default function HomePage() {
   const [properties, setProperties] = useState(initialProperties);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
@@ -1295,6 +1303,7 @@ export default function HomePage() {
   const [projectInvitations, setProjectInvitations] = useState<ProjectInvitation[]>([]);
   const [projectName, setProjectName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteInstructions, setInviteInstructions] = useState("");
   const [settingsError, setSettingsError] = useState("");
   const [propertyForm, setPropertyForm] = useState<PropertyFormState>(
     createInitialPropertyForm(),
@@ -1822,6 +1831,7 @@ export default function HomePage() {
     setNewAuthPassword("");
     setAuthPassword("");
     setAuthMessage("");
+    setInviteInstructions("");
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -1861,6 +1871,12 @@ export default function HomePage() {
       return;
     }
 
+    const instructions = createInviteInstructions(
+      email,
+      activeProject?.name ?? "aktywny projekt",
+      window.location.origin,
+    );
+
     try {
       const supabase = createSupabaseClient();
       const { data, error } = await supabase
@@ -1883,9 +1899,35 @@ export default function HomePage() {
         ...currentInvitations,
       ]);
       setInviteEmail("");
-      setSettingsError("");
+      setInviteInstructions(instructions);
+      setSettingsError("Zaproszenie zapisane. Nie wysyłamy maila automatycznie.");
     } catch (error) {
-      setSettingsError(`Nie udało się dodać zaproszenia: ${getErrorMessage(error)}`);
+      const message = getErrorMessage(error);
+
+      if (
+        message.includes("duplicate key") ||
+        message.includes("project_invitations_project_id_email_key")
+      ) {
+        setInviteEmail("");
+        setInviteInstructions(instructions);
+        setSettingsError("Zaproszenie dla tego adresu już istnieje. Skopiuj instrukcję poniżej.");
+        return;
+      }
+
+      setSettingsError(`Nie udało się dodać zaproszenia: ${message}`);
+    }
+  }
+
+  async function copyInviteInstructions() {
+    if (!inviteInstructions) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(inviteInstructions);
+      setSettingsError("Instrukcja zaproszenia została skopiowana.");
+    } catch {
+      setSettingsError("Nie udało się skopiować automatycznie. Skopiuj tekst instrukcji ręcznie.");
     }
   }
 
@@ -3235,6 +3277,19 @@ export default function HomePage() {
                       Zaproś
                     </button>
                   </form>
+
+                  {inviteInstructions ? (
+                    <div className="invite-instructions">
+                      <p>{inviteInstructions}</p>
+                      <button
+                        className="secondary-button justify-center"
+                        onClick={copyInviteInstructions}
+                        type="button"
+                      >
+                        Skopiuj instrukcję
+                      </button>
+                    </div>
+                  ) : null}
 
                   <div className="settings-list">
                     <h3>Członkowie</h3>
